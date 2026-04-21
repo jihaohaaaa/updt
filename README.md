@@ -14,6 +14,7 @@ It mirrors the behavior of the original script, but the workflow is implemented 
 - paru AUR packages (Arch Linux)
 - flatpak apps (Arch Linux profile)
 - pacman packages (Arch Linux)
+- pkg packages (Termux)
 
 ## System policy
 
@@ -21,6 +22,7 @@ It mirrors the behavior of the original script, but the workflow is implemented 
 
 - macOS: Homebrew, npm, cargo, rustup
 - Arch Linux: npm, cargo, rustup, paru, pacman, flatpak
+- Termux: pkg, npm, cargo
 - other systems: all targets disabled by policy
 
 ## Install

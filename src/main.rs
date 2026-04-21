@@ -27,8 +27,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-const TARGET_IDS: [&str; 7] = [
-    "brew", "npm", "cargo", "rustup", "paru", "flatpak", "pacman",
+const TARGET_IDS: [&str; 8] = [
+    "brew", "npm", "cargo", "rustup", "paru", "flatpak", "pacman", "pkg",
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -36,6 +36,7 @@ enum SystemProfile {
     Unknown,
     Macos,
     Arch,
+    Termux,
 }
 
 enum CliCommand {
@@ -73,7 +74,12 @@ struct AppState {
     pacman_has_updates: bool,
     pacman_check_failed: bool,
     pacman_updatable_packages: Vec<String>,
+    pkg_installed: bool,
+    pkg_has_updates: bool,
+    pkg_check_failed: bool,
+    pkg_updatable_packages: Vec<String>,
     is_arch_linux: bool,
+    is_termux: bool,
     system_profile: SystemProfile,
     enable_brew: bool,
     enable_npm: bool,
@@ -82,6 +88,7 @@ struct AppState {
     enable_paru: bool,
     enable_pacman: bool,
     enable_flatpak: bool,
+    enable_pkg: bool,
 }
 
 impl Default for AppState {
@@ -115,7 +122,12 @@ impl Default for AppState {
             pacman_has_updates: false,
             pacman_check_failed: false,
             pacman_updatable_packages: vec![],
+            pkg_installed: false,
+            pkg_has_updates: false,
+            pkg_check_failed: false,
+            pkg_updatable_packages: vec![],
             is_arch_linux: false,
+            is_termux: false,
             system_profile: SystemProfile::Unknown,
             enable_brew: false,
             enable_npm: false,
@@ -124,6 +136,7 @@ impl Default for AppState {
             enable_paru: false,
             enable_pacman: false,
             enable_flatpak: false,
+            enable_pkg: false,
         }
     }
 }
@@ -137,6 +150,7 @@ fn target_label(id: &str) -> &'static str {
         "paru" => "paru",
         "flatpak" => "flatpak",
         "pacman" => "pacman",
+        "pkg" => "pkg",
         _ => "unknown",
     }
 }
@@ -256,6 +270,7 @@ fn section_title(target: &str) -> &'static str {
         "paru" => "paru (AUR)",
         "flatpak" => "flatpak",
         "pacman" => "pacman",
+        "pkg" => "pkg (Termux)",
         _ => "unknown",
     }
 }
@@ -334,6 +349,17 @@ fn summarize_target_status(target: &str, state: &AppState) -> (MsgKind, &'static
             } else if state.pacman_check_failed {
                 (MsgKind::Warn, "检查失败")
             } else if state.pacman_has_updates {
+                (MsgKind::Warn, "发现可升级项")
+            } else {
+                (MsgKind::Ok, "当前最新")
+            }
+        }
+        "pkg" => {
+            if !state.enable_pkg || !state.pkg_installed {
+                (MsgKind::Warn, "已跳过")
+            } else if state.pkg_check_failed {
+                (MsgKind::Warn, "检查失败")
+            } else if state.pkg_has_updates {
                 (MsgKind::Warn, "发现可升级项")
             } else {
                 (MsgKind::Ok, "当前最新")
@@ -607,7 +633,7 @@ fn install_fish_completion() -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::other("invalid completion path"))?;
     fs::create_dir_all(parent)?;
 
-    let script = r#"set -l __updt_targets brew npm cargo rustup paru flatpak pacman
+    let script = r#"set -l __updt_targets brew npm cargo rustup paru flatpak pacman pkg
 
 complete -c updt -f
 complete -c updt -n '__fish_use_subcommand' -a 'update fish'
@@ -619,8 +645,17 @@ complete -c updt -n '__fish_seen_subcommand_from update' -x -a "$__updt_targets"
 }
 
 fn parse_profile(state: &mut AppState) {
+    let prefix = env::var("PREFIX").unwrap_or_default();
+    state.is_termux = prefix.contains("com.termux")
+        || Path::new("/data/data/com.termux/files/usr/bin/pkg").exists();
     state.is_arch_linux = PathBuf::from("/etc/arch-release").is_file();
-    if env::consts::OS == "macos" {
+    if state.is_termux {
+        state.system_profile = SystemProfile::Termux;
+        state.enable_pkg = true;
+        state.enable_npm = true;
+        state.enable_cargo = true;
+        state.enable_rustup = false;
+    } else if env::consts::OS == "macos" {
         state.system_profile = SystemProfile::Macos;
         state.enable_brew = true;
         state.enable_npm = true;
@@ -642,6 +677,7 @@ fn profile_name(profile: SystemProfile) -> &'static str {
         SystemProfile::Unknown => "unknown",
         SystemProfile::Macos => "macos",
         SystemProfile::Arch => "arch",
+        SystemProfile::Termux => "termux",
     }
 }
 
@@ -1536,6 +1572,70 @@ fn check_pacman_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     }
 }
 
+fn check_pkg_quiet(state: &mut AppState, logs: &mut Vec<String>) {
+    if !state.enable_pkg {
+        logs.push(log_pkg_line("pkg", "按系统策略跳过.", MsgKind::Warn));
+        return;
+    }
+    if !command_exists("pkg") {
+        logs.push(log_pkg_line("pkg", "未安装, 跳过.", MsgKind::Warn));
+        return;
+    }
+
+    state.pkg_installed = true;
+    logs.push(log_pkg_line(
+        "pkg",
+        "正在检查可升级项 (apt list --upgradable)...",
+        MsgKind::Info,
+    ));
+    let Ok((status, output)) = run_capture("apt", &["list", "--upgradable"]) else {
+        state.pkg_check_failed = true;
+        logs.push(log_pkg_line(
+            "pkg",
+            "检查失败: 无法执行 apt 命令.",
+            MsgKind::Warn,
+        ));
+        return;
+    };
+    if status != 0 {
+        state.pkg_check_failed = true;
+        logs.push(log_pkg_line(
+            "pkg",
+            &format!("检查失败 (exit {status})."),
+            MsgKind::Warn,
+        ));
+        return;
+    }
+
+    for line in output.lines().map(str::trim).filter(|x| !x.is_empty()) {
+        if line.starts_with("WARNING:")
+            || line.eq_ignore_ascii_case("listing...")
+            || line.eq_ignore_ascii_case("listing")
+            || line.eq_ignore_ascii_case("done")
+        {
+            continue;
+        }
+        let token = line.split_whitespace().next().unwrap_or_default();
+        if token.is_empty() || !token.contains('/') {
+            continue;
+        }
+        let name = token.split('/').next().unwrap_or(token).to_string();
+        if !name.is_empty() {
+            state.pkg_updatable_packages.push(name);
+        }
+    }
+
+    if state.pkg_updatable_packages.is_empty() {
+        logs.push(log_pkg_line("pkg", "已是最新.", MsgKind::Ok));
+    } else {
+        state.pkg_has_updates = true;
+        logs.push(log_pkg_line("pkg", "以下包可升级:", MsgKind::Info));
+        for p in &state.pkg_updatable_packages {
+            logs.push(format!("  - {p}"));
+        }
+    }
+}
+
 fn run_single_check(target: &str) -> CheckResult {
     let mut local = AppState::default();
     let mut logs = Vec::new();
@@ -1548,6 +1648,7 @@ fn run_single_check(target: &str) -> CheckResult {
         "paru" => check_paru_quiet(&mut local, &mut logs),
         "flatpak" => check_flatpak_quiet(&mut local, &mut logs),
         "pacman" => check_pacman_quiet(&mut local, &mut logs),
+        "pkg" => check_pkg_quiet(&mut local, &mut logs),
         _ => {}
     }
     CheckResult {
@@ -1600,6 +1701,12 @@ fn merge_check_result(state: &mut AppState, target: &str, local: AppState) {
             state.pacman_has_updates = local.pacman_has_updates;
             state.pacman_check_failed = local.pacman_check_failed;
             state.pacman_updatable_packages = local.pacman_updatable_packages;
+        }
+        "pkg" => {
+            state.pkg_installed = local.pkg_installed;
+            state.pkg_has_updates = local.pkg_has_updates;
+            state.pkg_check_failed = local.pkg_check_failed;
+            state.pkg_updatable_packages = local.pkg_updatable_packages;
         }
         _ => {}
     }
@@ -1754,6 +1861,26 @@ fn upgrade_selected(selected: &[String]) -> bool {
         }
     }
 
+    if selected.iter().any(|s| s == "pkg") {
+        println!("[pkg] 正在执行: pkg update");
+        match run_inherit("pkg", &["update"]) {
+            Ok(true) => {
+                println!("[pkg] 正在执行: pkg upgrade");
+                match run_inherit("pkg", &["upgrade"]) {
+                    Ok(true) => println!("[pkg] 包升级完成."),
+                    _ => {
+                        println!("[pkg] 包升级失败.");
+                        run_fail = true;
+                    }
+                }
+            }
+            _ => {
+                println!("[pkg] 升级失败: pkg update 失败.");
+                run_fail = true;
+            }
+        }
+    }
+
     print_section("汇总");
     println!(
         "已选择升级项: {}",
@@ -1794,6 +1921,9 @@ fn build_upgradable_targets(state: &AppState) -> Vec<String> {
     if state.pacman_has_updates {
         upgradable_targets.push("pacman".to_string());
     }
+    if state.pkg_has_updates {
+        upgradable_targets.push("pkg".to_string());
+    }
     upgradable_targets
 }
 
@@ -1820,6 +1950,7 @@ fn any_check_failed(state: &AppState) -> bool {
         || state.paru_check_failed
         || state.flatpak_check_failed
         || state.pacman_check_failed
+        || state.pkg_check_failed
 }
 
 fn main() {
