@@ -636,8 +636,11 @@ fn install_fish_completion() -> io::Result<PathBuf> {
     let script = r#"set -l __updt_targets brew npm cargo rustup paru flatpak pacman pkg
 
 complete -c updt -f
+complete -c updt -s h -l help -d 'Print help'
+complete -c updt -s V -l version -d 'Print version'
 complete -c updt -n '__fish_use_subcommand' -a 'update fish'
 complete -c updt -n '__fish_seen_subcommand_from update' -x -a "$__updt_targets"
+complete -c updt -n '__fish_seen_subcommand_from update' -s h -l help -d 'Print help'
 "#;
 
     fs::write(&path, script)?;
