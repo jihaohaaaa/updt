@@ -1,4 +1,5 @@
 use chrono::Local;
+use clap::{Arg, Command as ClapCommand, builder::PossibleValuesParser};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
@@ -21,11 +22,21 @@ use std::path::{Path, PathBuf};
 use std::process::{self, Command, Stdio};
 use std::time::Duration;
 
+const TARGET_IDS: [&str; 7] = [
+    "brew", "npm", "cargo", "rustup", "paru", "flatpak", "pacman",
+];
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SystemProfile {
     Unknown,
     Macos,
     Arch,
+}
+
+enum CliCommand {
+    Default,
+    Update(Vec<String>),
+    Fish,
 }
 
 struct AppState {
@@ -112,6 +123,51 @@ impl Default for AppState {
     }
 }
 
+fn target_label(id: &str) -> &'static str {
+    match id {
+        "brew" => "Homebrew",
+        "npm" => "npm",
+        "cargo" => "cargo",
+        "rustup" => "rustup",
+        "paru" => "paru",
+        "flatpak" => "flatpak",
+        "pacman" => "pacman",
+        _ => "unknown",
+    }
+}
+
+fn parse_cli() -> CliCommand {
+    let matches = ClapCommand::new("updt")
+        .version(env!("CARGO_PKG_VERSION"))
+        .subcommand(
+            ClapCommand::new("update")
+                .about("Update selected targets")
+                .arg(
+                    Arg::new("targets")
+                        .num_args(1..)
+                        .required(true)
+                        .value_delimiter(',')
+                        .value_parser(PossibleValuesParser::new(TARGET_IDS))
+                        .help("Targets to update, for example: npm,cargo"),
+                ),
+        )
+        .subcommand(
+            ClapCommand::new("fish")
+                .about("Install fish completion to ~/.config/fish/completions/updt.fish"),
+        )
+        .get_matches();
+
+    match matches.subcommand() {
+        Some(("update", sub)) => CliCommand::Update(
+            sub.get_many::<String>("targets")
+                .map(|v| v.cloned().collect())
+                .unwrap_or_default(),
+        ),
+        Some(("fish", _)) => CliCommand::Fish,
+        _ => CliCommand::Default,
+    }
+}
+
 fn print_section(title: &str) {
     println!();
     println!("==== {title} ====");
@@ -142,7 +198,7 @@ fn is_executable(path: &Path) -> bool {
     }
     #[cfg(unix)]
     {
-        return meta.permissions().mode() & 0o111 != 0;
+        meta.permissions().mode() & 0o111 != 0
     }
     #[cfg(not(unix))]
     {
@@ -247,16 +303,7 @@ fn select_targets_prompt(upgradable_targets: &[String]) -> Vec<String> {
     println!("逐项确认待升级项目.");
 
     for target in upgradable_targets {
-        let message = match target.as_str() {
-            "Homebrew" => "是否升级 Homebrew",
-            "npm" => "是否升级 npm 全局包",
-            "cargo" => "是否升级 cargo 已安装 crate",
-            "rustup" => "是否升级 rustup toolchain",
-            "paru" => "是否升级 paru (AUR)",
-            "flatpak" => "是否升级 flatpak 应用",
-            "pacman" => "是否升级 pacman 包 (sudo pacman -Syu)",
-            _ => continue,
-        };
+        let message = format!("是否升级 {}", target_label(target));
         print!("{message} [y/N]: ");
         let _ = io::stdout().flush();
         let mut answer = String::new();
@@ -296,7 +343,7 @@ fn select_targets_tui(upgradable_targets: &[String]) -> io::Result<Vec<String>> 
                 .enumerate()
                 .map(|(idx, item)| {
                     let mark = if selected[idx] { "[x]" } else { "[ ]" };
-                    ListItem::new(format!("{mark} {item}"))
+                    ListItem::new(format!("{mark} {}", target_label(item)))
                 })
                 .collect();
 
@@ -333,10 +380,8 @@ fn select_targets_tui(upgradable_targets: &[String]) -> io::Result<Vec<String>> 
             KeyCode::Up => {
                 cursor = cursor.saturating_sub(1);
             }
-            KeyCode::Down => {
-                if cursor + 1 < upgradable_targets.len() {
-                    cursor += 1;
-                }
+            KeyCode::Down if cursor + 1 < upgradable_targets.len() => {
+                cursor += 1;
             }
             KeyCode::Char(' ') => {
                 selected[cursor] = !selected[cursor];
@@ -371,6 +416,36 @@ fn select_targets(upgradable_targets: &[String]) -> Vec<String> {
         }
     }
     select_targets_prompt(upgradable_targets)
+}
+
+fn install_fish_completion() -> io::Result<PathBuf> {
+    let Some(home) = env::var_os("HOME") else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "HOME env is not set",
+        ));
+    };
+
+    let path = PathBuf::from(home)
+        .join(".config")
+        .join("fish")
+        .join("completions")
+        .join("updt.fish");
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::other("invalid completion path"))?;
+    fs::create_dir_all(parent)?;
+
+    let script = r#"set -l __updt_targets brew npm cargo rustup paru flatpak pacman
+
+complete -c updt -f
+complete -c updt -n '__fish_use_subcommand' -a 'update fish'
+complete -c updt -n '__fish_seen_subcommand_from update' -x -a "$__updt_targets"
+"#;
+
+    fs::write(&path, script)?;
+    Ok(path)
 }
 
 fn parse_profile(state: &mut AppState) {
@@ -682,6 +757,7 @@ fn check_paru(state: &mut AppState) {
     if !state.is_arch_linux {
         println!("[paru] 检测到非 Arch Linux 环境, 将按可用命令尝试检查.");
     }
+
     println!("[paru] 正在检查 AUR 可升级项 (paru -Qua)...");
     let Ok((status, output)) = run_capture("paru", &["-Qua"]) else {
         state.paru_check_failed = true;
@@ -833,11 +909,37 @@ fn check_pacman(state: &mut AppState) {
     }
 }
 
+fn run_checks(state: &mut AppState, requested: &[String]) {
+    if requested.is_empty() {
+        check_brew(state);
+        check_npm(state);
+        check_cargo(state);
+        check_rustup(state);
+        check_paru(state);
+        check_flatpak(state);
+        check_pacman(state);
+        return;
+    }
+
+    for target in requested {
+        match target.as_str() {
+            "brew" => check_brew(state),
+            "npm" => check_npm(state),
+            "cargo" => check_cargo(state),
+            "rustup" => check_rustup(state),
+            "paru" => check_paru(state),
+            "flatpak" => check_flatpak(state),
+            "pacman" => check_pacman(state),
+            _ => {}
+        }
+    }
+}
+
 fn upgrade_selected(selected: &[String]) -> bool {
     print_section("执行升级");
     let mut run_fail = false;
 
-    if selected.iter().any(|s| s == "Homebrew") {
+    if selected.iter().any(|s| s == "brew") {
         println!("[brew] 正在刷新索引: brew update --quiet");
         match run_inherit("brew", &["update", "--quiet"]) {
             Ok(true) => {
@@ -924,7 +1026,14 @@ fn upgrade_selected(selected: &[String]) -> bool {
     }
 
     print_section("汇总");
-    println!("已选择升级项: {}", selected.join(", "));
+    println!(
+        "已选择升级项: {}",
+        selected
+            .iter()
+            .map(|id| target_label(id))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     if run_fail {
         println!("存在升级失败项.");
         return false;
@@ -933,25 +1042,10 @@ fn upgrade_selected(selected: &[String]) -> bool {
     true
 }
 
-fn main() {
-    let mut state = AppState::default();
-    parse_profile(&mut state);
-
-    print_section("检查可升级项");
-    println!("开始时间: {}", Local::now().format("%Y-%m-%d %H:%M:%S"));
-    println!("系统策略: {}", profile_name(state.system_profile));
-
-    check_brew(&mut state);
-    check_npm(&mut state);
-    check_cargo(&mut state);
-    check_rustup(&mut state);
-    check_paru(&mut state);
-    check_flatpak(&mut state);
-    check_pacman(&mut state);
-
+fn build_upgradable_targets(state: &AppState) -> Vec<String> {
     let mut upgradable_targets = Vec::<String>::new();
     if state.brew_has_updates {
-        upgradable_targets.push("Homebrew".to_string());
+        upgradable_targets.push("brew".to_string());
     }
     if state.npm_has_updates {
         upgradable_targets.push("npm".to_string());
@@ -971,18 +1065,70 @@ fn main() {
     if state.pacman_has_updates {
         upgradable_targets.push("pacman".to_string());
     }
+    upgradable_targets
+}
+
+fn resolve_cli_selection(requested: &[String], upgradable_targets: &[String]) -> Vec<String> {
+    let mut selected = Vec::<String>::new();
+    for req in requested {
+        if selected.iter().any(|x| x == req) {
+            continue;
+        }
+        if upgradable_targets.iter().any(|x| x == req) {
+            selected.push(req.clone());
+        } else {
+            println!("[cli] {} 当前没有可升级项, 跳过.", target_label(req));
+        }
+    }
+    selected
+}
+
+fn any_check_failed(state: &AppState) -> bool {
+    state.brew_check_failed
+        || state.npm_check_failed
+        || state.cargo_check_failed
+        || state.rustup_check_failed
+        || state.paru_check_failed
+        || state.flatpak_check_failed
+        || state.pacman_check_failed
+}
+
+fn main() {
+    let cli = parse_cli();
+
+    if matches!(cli, CliCommand::Fish) {
+        match install_fish_completion() {
+            Ok(path) => {
+                println!("fish completion 已写入: {}", path.display());
+                process::exit(0);
+            }
+            Err(err) => {
+                eprintln!("[fish] 写入失败: {err}");
+                process::exit(1);
+            }
+        }
+    }
+
+    let mut state = AppState::default();
+    parse_profile(&mut state);
+
+    print_section("检查可升级项");
+    println!("开始时间: {}", Local::now().format("%Y-%m-%d %H:%M:%S"));
+    println!("系统策略: {}", profile_name(state.system_profile));
+
+    let requested_updates = match &cli {
+        CliCommand::Update(v) => v.clone(),
+        _ => Vec::new(),
+    };
+
+    run_checks(&mut state, &requested_updates);
+
+    let upgradable_targets = build_upgradable_targets(&state);
 
     if upgradable_targets.is_empty() {
         print_section("汇总");
         println!("没有可升级项.");
-        if state.brew_check_failed
-            || state.npm_check_failed
-            || state.cargo_check_failed
-            || state.rustup_check_failed
-            || state.paru_check_failed
-            || state.flatpak_check_failed
-            || state.pacman_check_failed
-        {
+        if any_check_failed(&state) {
             println!("但有检查失败, 请根据上方日志排查.");
             process::exit(1);
         }
@@ -990,7 +1136,11 @@ fn main() {
     }
 
     print_section("选择要升级的项目");
-    let selected_targets = select_targets(&upgradable_targets);
+    let selected_targets = if requested_updates.is_empty() {
+        select_targets(&upgradable_targets)
+    } else {
+        resolve_cli_selection(&requested_updates, &upgradable_targets)
+    };
 
     if selected_targets.is_empty() {
         println!("未选择任何升级项, 已退出.");

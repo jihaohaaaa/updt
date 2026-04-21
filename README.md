@@ -38,8 +38,42 @@ updt
 The program does 3 stages.
 
 1. Check upgrade candidates.
-2. Ask for per-target confirmation.
+2. Select targets to upgrade.
 3. Run upgrades for selected targets.
+
+Default selection is TUI:
+
+- `Up` / `Down`: move cursor
+- `Space`: toggle selected target
+- `Enter`: confirm selection
+- `q` / `Esc`: quit selection
+
+## CLI
+
+Show version:
+
+```bash
+updt --version
+```
+
+Update only selected targets (skip interactive selector):
+
+```bash
+updt update npm
+updt update npm,cargo
+updt update npm cargo
+```
+
+Install fish completion script to `~/.config/fish/completions/updt.fish`:
+
+```bash
+updt fish
+```
+
+Available subcommands:
+
+- `update`
+- `fish`
 
 ## Notes
 
