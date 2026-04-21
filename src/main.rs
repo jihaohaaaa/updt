@@ -3,6 +3,7 @@ use clap::{Arg, Command as ClapCommand, builder::PossibleValuesParser};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
+    style::{Attribute, Color as TermColor, Stylize},
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
@@ -13,6 +14,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 use serde_json::Value;
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
@@ -20,6 +22,8 @@ use std::io::{self, IsTerminal, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command, Stdio};
+use std::sync::OnceLock;
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
@@ -171,7 +175,172 @@ fn parse_cli() -> CliCommand {
 
 fn print_section(title: &str) {
     println!();
-    println!("==== {title} ====");
+    println!(
+        "{}",
+        color_bold(&format!("==== {title} ===="), TermColor::Cyan)
+    );
+}
+
+fn color_enabled() -> bool {
+    static CACHE: OnceLock<bool> = OnceLock::new();
+    *CACHE.get_or_init(|| io::stdout().is_terminal())
+}
+
+fn color(text: &str, c: TermColor) -> String {
+    if color_enabled() {
+        format!("{}", text.with(c))
+    } else {
+        text.to_string()
+    }
+}
+
+fn color_bold(text: &str, c: TermColor) -> String {
+    if color_enabled() {
+        format!("{}", text.with(c).attribute(Attribute::Bold))
+    } else {
+        text.to_string()
+    }
+}
+
+fn ok_text(text: &str) -> String {
+    color(text, TermColor::Green)
+}
+
+fn warn_text(text: &str) -> String {
+    color(text, TermColor::Yellow)
+}
+
+fn err_text(text: &str) -> String {
+    color(text, TermColor::Red)
+}
+
+#[derive(Clone, Copy)]
+enum MsgKind {
+    Info,
+    Ok,
+    Warn,
+}
+
+fn pkg_color(pkg: &str) -> TermColor {
+    let _ = pkg;
+    TermColor::Cyan
+}
+
+#[allow(dead_code)]
+fn log_pkg(pkg: &str, msg: &str, kind: MsgKind) {
+    let prefix = color_bold(&format!("[{pkg}]"), pkg_color(pkg));
+    let body = match kind {
+        MsgKind::Info => color(msg, TermColor::White),
+        MsgKind::Ok => ok_text(msg),
+        MsgKind::Warn => warn_text(msg),
+    };
+    println!("{prefix} {body}");
+}
+
+fn log_pkg_line(pkg: &str, msg: &str, kind: MsgKind) -> String {
+    let prefix = color_bold(&format!("[{pkg}]"), pkg_color(pkg));
+    let body = match kind {
+        MsgKind::Info => color(msg, TermColor::White),
+        MsgKind::Ok => ok_text(msg),
+        MsgKind::Warn => warn_text(msg),
+    };
+    format!("{prefix} {body}")
+}
+
+fn section_title(target: &str) -> &'static str {
+    match target {
+        "brew" => "Homebrew",
+        "npm" => "npm (global)",
+        "cargo" => "cargo",
+        "rustup" => "rustup",
+        "paru" => "paru (AUR)",
+        "flatpak" => "flatpak",
+        "pacman" => "pacman",
+        _ => "unknown",
+    }
+}
+
+fn summarize_target_status(target: &str, state: &AppState) -> (MsgKind, &'static str) {
+    match target {
+        "brew" => {
+            if !state.enable_brew || !state.brew_installed {
+                (MsgKind::Warn, "已跳过")
+            } else if state.brew_check_failed {
+                (MsgKind::Warn, "检查失败")
+            } else if state.brew_has_updates {
+                (MsgKind::Warn, "发现可升级项")
+            } else {
+                (MsgKind::Ok, "当前最新")
+            }
+        }
+        "npm" => {
+            if !state.enable_npm || !state.npm_installed {
+                (MsgKind::Warn, "已跳过")
+            } else if state.npm_check_failed {
+                (MsgKind::Warn, "检查失败")
+            } else if state.npm_has_updates {
+                (MsgKind::Warn, "发现可升级项")
+            } else {
+                (MsgKind::Ok, "当前最新")
+            }
+        }
+        "cargo" => {
+            if !state.enable_cargo || !state.cargo_installed {
+                (MsgKind::Warn, "已跳过")
+            } else if state.cargo_check_failed {
+                (MsgKind::Warn, "检查失败")
+            } else if state.cargo_has_updates {
+                (MsgKind::Warn, "发现可升级项")
+            } else {
+                (MsgKind::Ok, "当前最新")
+            }
+        }
+        "rustup" => {
+            if !state.enable_rustup || !state.rustup_installed {
+                (MsgKind::Warn, "已跳过")
+            } else if state.rustup_check_failed {
+                (MsgKind::Warn, "检查失败")
+            } else if state.rustup_has_updates {
+                (MsgKind::Warn, "发现可升级项")
+            } else {
+                (MsgKind::Ok, "当前最新")
+            }
+        }
+        "paru" => {
+            if !state.enable_paru || !state.paru_installed {
+                (MsgKind::Warn, "已跳过")
+            } else if state.paru_check_failed {
+                (MsgKind::Warn, "检查失败")
+            } else if state.paru_has_updates {
+                (MsgKind::Warn, "发现可升级项")
+            } else {
+                (MsgKind::Ok, "当前最新")
+            }
+        }
+        "flatpak" => {
+            if !state.enable_flatpak || !state.flatpak_installed {
+                (MsgKind::Warn, "已跳过")
+            } else if state.flatpak_check_failed {
+                (MsgKind::Warn, "检查失败")
+            } else if state.flatpak_has_updates {
+                (MsgKind::Warn, "发现可升级项")
+            } else {
+                (MsgKind::Ok, "当前最新")
+            }
+        }
+        "pacman" => {
+            if !state.enable_pacman || !state.pacman_installed {
+                (MsgKind::Warn, "已跳过")
+            } else if state.pacman_check_failed {
+                (MsgKind::Warn, "检查失败")
+            } else if state.pacman_has_updates {
+                (MsgKind::Warn, "发现可升级项")
+            } else {
+                (MsgKind::Ok, "当前最新")
+            }
+        }
+        _ => (MsgKind::Warn, "未知状态"),
+    }
 }
 
 fn command_exists(name: &str) -> bool {
@@ -476,6 +645,7 @@ fn profile_name(profile: SystemProfile) -> &'static str {
     }
 }
 
+#[allow(dead_code)]
 fn check_brew(state: &mut AppState, show_section: bool) {
     if show_section {
         print_section("Homebrew");
@@ -490,7 +660,11 @@ fn check_brew(state: &mut AppState, show_section: bool) {
     }
 
     state.brew_installed = true;
-    println!("[brew] 正在检查可升级项 (brew outdated --greedy --json=v2)...");
+    log_pkg(
+        "brew",
+        "正在检查可升级项 (brew outdated --greedy --json=v2)...",
+        MsgKind::Info,
+    );
     let Ok((status, output)) = run_capture("brew", &["outdated", "--greedy", "--json=v2"]) else {
         state.brew_check_failed = true;
         println!("[brew] 检查失败: 无法执行 brew 命令.");
@@ -545,7 +719,7 @@ fn check_brew(state: &mut AppState, show_section: bool) {
             println!("  - {pkg}");
         }
     } else {
-        println!("[brew] Formula: 已是最新.");
+        log_pkg("brew", "Formula: 已是最新.", MsgKind::Ok);
     }
 
     if !state.brew_cask_list.is_empty() {
@@ -555,10 +729,11 @@ fn check_brew(state: &mut AppState, show_section: bool) {
             println!("  - {pkg}");
         }
     } else {
-        println!("[brew] Cask: 已是最新.");
+        log_pkg("brew", "Cask: 已是最新.", MsgKind::Ok);
     }
 }
 
+#[allow(dead_code)]
 fn check_npm(state: &mut AppState, show_section: bool) {
     if show_section {
         print_section("npm (global)");
@@ -573,7 +748,11 @@ fn check_npm(state: &mut AppState, show_section: bool) {
     }
 
     state.npm_installed = true;
-    println!("[npm] 正在检查全局包更新 (npm outdated --json --global)...");
+    log_pkg(
+        "npm",
+        "正在检查全局包更新 (npm outdated --json --global)...",
+        MsgKind::Info,
+    );
     let Ok((status, output)) = run_capture("npm", &["outdated", "--json", "--global"]) else {
         state.npm_check_failed = true;
         println!("[npm] 检查失败: 无法执行 npm 命令.");
@@ -581,7 +760,7 @@ fn check_npm(state: &mut AppState, show_section: bool) {
     };
 
     if status == 0 {
-        println!("[npm] 全局包已是最新.");
+        log_pkg("npm", "全局包已是最新.", MsgKind::Ok);
         return;
     }
 
@@ -599,11 +778,11 @@ fn check_npm(state: &mut AppState, show_section: bool) {
             return;
         };
         let Some(obj) = root.as_object() else {
-            println!("[npm] 全局包已是最新.");
+            log_pkg("npm", "全局包已是最新.", MsgKind::Ok);
             return;
         };
         if obj.is_empty() {
-            println!("[npm] 全局包已是最新.");
+            log_pkg("npm", "全局包已是最新.", MsgKind::Ok);
             return;
         }
         state.npm_has_updates = true;
@@ -648,6 +827,7 @@ fn parse_cargo_list(output: &str) -> Result<Vec<String>, ()> {
     Ok(pkgs)
 }
 
+#[allow(dead_code)]
 fn check_cargo(state: &mut AppState, show_section: bool) {
     if show_section {
         print_section("cargo");
@@ -676,7 +856,11 @@ fn check_cargo(state: &mut AppState, show_section: bool) {
         return;
     }
     state.cargo_updater_installed = true;
-    println!("[cargo] 正在检查已安装 crate 更新 (cargo install-update --list)...");
+    log_pkg(
+        "cargo",
+        "正在检查已安装 crate 更新 (cargo install-update --list)...",
+        MsgKind::Info,
+    );
 
     let Ok((status, output)) = run_cargo_install_update_capture(&["--list"]) else {
         state.cargo_check_failed = true;
@@ -706,10 +890,11 @@ fn check_cargo(state: &mut AppState, show_section: bool) {
             println!("  - {pkg}");
         }
     } else {
-        println!("[cargo] 已安装 crate 已是最新.");
+        log_pkg("cargo", "已安装 crate 已是最新.", MsgKind::Ok);
     }
 }
 
+#[allow(dead_code)]
 fn check_rustup(state: &mut AppState, show_section: bool) {
     if show_section {
         print_section("rustup");
@@ -724,14 +909,18 @@ fn check_rustup(state: &mut AppState, show_section: bool) {
     }
 
     state.rustup_installed = true;
-    println!("[rustup] 正在检查 toolchain 更新 (rustup check --no-self-update)...");
+    log_pkg(
+        "rustup",
+        "正在检查 toolchain 更新 (rustup check --no-self-update)...",
+        MsgKind::Info,
+    );
     let Ok((status, output)) = run_capture("rustup", &["check", "--no-self-update"]) else {
         state.rustup_check_failed = true;
         println!("[rustup] 检查失败: 无法执行 rustup 命令.");
         return;
     };
     match status {
-        0 => println!("[rustup] toolchain 已是最新."),
+        0 => log_pkg("rustup", "toolchain 已是最新.", MsgKind::Ok),
         100 => {
             state.rustup_has_updates = true;
             println!("[rustup] 以下 toolchain 可升级:");
@@ -751,12 +940,13 @@ fn check_rustup(state: &mut AppState, show_section: bool) {
     }
 }
 
+#[allow(dead_code)]
 fn check_paru(state: &mut AppState, show_section: bool) {
     if show_section {
         print_section("paru (AUR)");
     }
     if !state.enable_paru {
-        println!("[paru] 按系统策略跳过.");
+        log_pkg("paru", "按系统策略跳过.", MsgKind::Warn);
         return;
     }
     if !command_exists("paru") {
@@ -803,12 +993,13 @@ fn check_paru(state: &mut AppState, show_section: bool) {
     }
 }
 
+#[allow(dead_code)]
 fn check_flatpak(state: &mut AppState, show_section: bool) {
     if show_section {
         print_section("flatpak");
     }
     if !state.enable_flatpak {
-        println!("[flatpak] 按系统策略跳过.");
+        log_pkg("flatpak", "按系统策略跳过.", MsgKind::Warn);
         return;
     }
     if !command_exists("flatpak") {
@@ -852,12 +1043,13 @@ fn check_flatpak(state: &mut AppState, show_section: bool) {
     }
 }
 
+#[allow(dead_code)]
 fn check_pacman(state: &mut AppState, show_section: bool) {
     if show_section {
         print_section("pacman");
     }
     if !state.enable_pacman {
-        println!("[pacman] 按系统策略跳过.");
+        log_pkg("pacman", "按系统策略跳过.", MsgKind::Warn);
         return;
     }
     if !command_exists("pacman") {
@@ -924,20 +1116,445 @@ fn check_pacman(state: &mut AppState, show_section: bool) {
     }
 }
 
-fn run_single_check(target: &str) -> AppState {
+struct CheckResult {
+    target: String,
+    state: AppState,
+    logs: Vec<String>,
+}
+
+fn check_brew_quiet(state: &mut AppState, logs: &mut Vec<String>) {
+    if !state.enable_brew {
+        logs.push(log_pkg_line("brew", "按系统策略跳过.", MsgKind::Warn));
+        return;
+    }
+    if !command_exists("brew") {
+        logs.push(log_pkg_line("brew", "未安装, 跳过.", MsgKind::Warn));
+        return;
+    }
+    state.brew_installed = true;
+    logs.push(log_pkg_line(
+        "brew",
+        "正在检查可升级项 (brew outdated --greedy --json=v2)...",
+        MsgKind::Info,
+    ));
+    let Ok((status, output)) = run_capture("brew", &["outdated", "--greedy", "--json=v2"]) else {
+        state.brew_check_failed = true;
+        logs.push(log_pkg_line(
+            "brew",
+            "检查失败: 无法执行 brew 命令.",
+            MsgKind::Warn,
+        ));
+        return;
+    };
+    if status != 0 {
+        state.brew_check_failed = true;
+        logs.push(log_pkg_line(
+            "brew",
+            &format!("检查失败 (brew outdated --greedy --json=v2, exit {status})."),
+            MsgKind::Warn,
+        ));
+        return;
+    }
+    let Some(json_text) = first_json_payload(&output) else {
+        state.brew_check_failed = true;
+        logs.push(log_pkg_line(
+            "brew",
+            "检查失败: 未找到 JSON 内容.",
+            MsgKind::Warn,
+        ));
+        return;
+    };
+    let Ok(root) = serde_json::from_str::<Value>(json_text) else {
+        state.brew_check_failed = true;
+        logs.push(log_pkg_line(
+            "brew",
+            "检查失败: JSON 解析失败.",
+            MsgKind::Warn,
+        ));
+        return;
+    };
+    state.brew_formula_list = root
+        .get("formulae")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flat_map(|arr| arr.iter())
+        .filter_map(|item| item.get("name").and_then(Value::as_str))
+        .map(ToOwned::to_owned)
+        .collect();
+    state.brew_cask_list = root
+        .get("casks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flat_map(|arr| arr.iter())
+        .filter_map(|item| item.get("name").and_then(Value::as_str))
+        .map(ToOwned::to_owned)
+        .collect();
+    if state.brew_formula_list.is_empty() {
+        logs.push(log_pkg_line("brew", "Formula: 已是最新.", MsgKind::Ok));
+    } else {
+        state.brew_has_updates = true;
+        logs.push(log_pkg_line("brew", "Formula 可升级:", MsgKind::Info));
+        for p in &state.brew_formula_list {
+            logs.push(format!("  - {p}"));
+        }
+    }
+    if state.brew_cask_list.is_empty() {
+        logs.push(log_pkg_line("brew", "Cask: 已是最新.", MsgKind::Ok));
+    } else {
+        state.brew_has_updates = true;
+        logs.push(log_pkg_line("brew", "Cask 可升级:", MsgKind::Info));
+        for p in &state.brew_cask_list {
+            logs.push(format!("  - {p}"));
+        }
+    }
+}
+
+fn check_npm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
+    if !state.enable_npm {
+        logs.push(log_pkg_line("npm", "按系统策略跳过.", MsgKind::Warn));
+        return;
+    }
+    if !command_exists("npm") {
+        logs.push(log_pkg_line("npm", "未安装, 跳过.", MsgKind::Warn));
+        return;
+    }
+    state.npm_installed = true;
+    logs.push(log_pkg_line(
+        "npm",
+        "正在检查全局包更新 (npm outdated --json --global)...",
+        MsgKind::Info,
+    ));
+    let Ok((status, output)) = run_capture("npm", &["outdated", "--json", "--global"]) else {
+        state.npm_check_failed = true;
+        logs.push(log_pkg_line(
+            "npm",
+            "检查失败: 无法执行 npm 命令.",
+            MsgKind::Warn,
+        ));
+        return;
+    };
+    if status == 0 {
+        logs.push(log_pkg_line("npm", "全局包已是最新.", MsgKind::Ok));
+        return;
+    }
+    if status != 1 {
+        state.npm_check_failed = true;
+        logs.push(log_pkg_line(
+            "npm",
+            &format!("检查失败 (exit {status})."),
+            MsgKind::Warn,
+        ));
+        return;
+    }
+    let Some(json_text) = first_json_payload(&output) else {
+        state.npm_check_failed = true;
+        logs.push(log_pkg_line(
+            "npm",
+            "检查失败: JSON 解析失败.",
+            MsgKind::Warn,
+        ));
+        return;
+    };
+    let Ok(root) = serde_json::from_str::<Value>(json_text) else {
+        state.npm_check_failed = true;
+        logs.push(log_pkg_line(
+            "npm",
+            "检查失败: JSON 解析失败.",
+            MsgKind::Warn,
+        ));
+        return;
+    };
+    let Some(obj) = root.as_object() else {
+        logs.push(log_pkg_line("npm", "全局包已是最新.", MsgKind::Ok));
+        return;
+    };
+    if obj.is_empty() {
+        logs.push(log_pkg_line("npm", "全局包已是最新.", MsgKind::Ok));
+        return;
+    }
+    state.npm_has_updates = true;
+    logs.push(log_pkg_line("npm", "以下全局包可升级:", MsgKind::Info));
+    for name in obj.keys() {
+        logs.push(format!("  - {name}"));
+    }
+}
+
+fn check_cargo_quiet(state: &mut AppState, logs: &mut Vec<String>) {
+    if !state.enable_cargo {
+        logs.push(log_pkg_line("cargo", "按系统策略跳过.", MsgKind::Warn));
+        return;
+    }
+    if !command_exists("cargo") {
+        logs.push(log_pkg_line("cargo", "未安装, 跳过.", MsgKind::Warn));
+        return;
+    }
+    state.cargo_installed = true;
+    if !command_exists("cargo-install-update") {
+        logs.push(log_pkg_line(
+            "cargo",
+            "未安装 cargo-install-update, 跳过.",
+            MsgKind::Warn,
+        ));
+        return;
+    }
+    state.cargo_updater_installed = true;
+    logs.push(log_pkg_line(
+        "cargo",
+        "正在检查已安装 crate 更新 (cargo install-update --list)...",
+        MsgKind::Info,
+    ));
+    let Ok((status, output)) = run_cargo_install_update_capture(&["--list"]) else {
+        state.cargo_check_failed = true;
+        logs.push(log_pkg_line(
+            "cargo",
+            "检查失败: 命令执行失败.",
+            MsgKind::Warn,
+        ));
+        return;
+    };
+    if status != 0 {
+        state.cargo_check_failed = true;
+        logs.push(log_pkg_line(
+            "cargo",
+            &format!("检查失败 (exit {status})."),
+            MsgKind::Warn,
+        ));
+        return;
+    }
+    let Ok(pkgs) = parse_cargo_list(&output) else {
+        state.cargo_check_failed = true;
+        logs.push(log_pkg_line(
+            "cargo",
+            "检查失败: 输出解析失败.",
+            MsgKind::Warn,
+        ));
+        return;
+    };
+    state.cargo_updatable_packages = pkgs;
+    if state.cargo_updatable_packages.is_empty() {
+        logs.push(log_pkg_line("cargo", "已安装 crate 已是最新.", MsgKind::Ok));
+    } else {
+        state.cargo_has_updates = true;
+        logs.push(log_pkg_line("cargo", "以下 crate 可升级:", MsgKind::Info));
+        for p in &state.cargo_updatable_packages {
+            logs.push(format!("  - {p}"));
+        }
+    }
+}
+
+fn check_rustup_quiet(state: &mut AppState, logs: &mut Vec<String>) {
+    if !state.enable_rustup {
+        logs.push(log_pkg_line("rustup", "按系统策略跳过.", MsgKind::Warn));
+        return;
+    }
+    if !command_exists("rustup") {
+        logs.push(log_pkg_line("rustup", "未安装, 跳过.", MsgKind::Warn));
+        return;
+    }
+    state.rustup_installed = true;
+    logs.push(log_pkg_line(
+        "rustup",
+        "正在检查 toolchain 更新 (rustup check --no-self-update)...",
+        MsgKind::Info,
+    ));
+    let Ok((status, output)) = run_capture("rustup", &["check", "--no-self-update"]) else {
+        state.rustup_check_failed = true;
+        logs.push(log_pkg_line(
+            "rustup",
+            "检查失败: 无法执行 rustup 命令.",
+            MsgKind::Warn,
+        ));
+        return;
+    };
+    match status {
+        0 => logs.push(log_pkg_line("rustup", "toolchain 已是最新.", MsgKind::Ok)),
+        100 => {
+            state.rustup_has_updates = true;
+            logs.push(log_pkg_line(
+                "rustup",
+                "以下 toolchain 可升级:",
+                MsgKind::Info,
+            ));
+            for line in output.lines().map(str::trim).filter(|x| !x.is_empty()) {
+                logs.push(format!("  - {line}"));
+            }
+        }
+        _ => {
+            state.rustup_check_failed = true;
+            logs.push(log_pkg_line(
+                "rustup",
+                &format!("检查失败 (exit {status})."),
+                MsgKind::Warn,
+            ));
+        }
+    }
+}
+
+fn check_paru_quiet(state: &mut AppState, logs: &mut Vec<String>) {
+    if !state.enable_paru {
+        logs.push(log_pkg_line("paru", "按系统策略跳过.", MsgKind::Warn));
+        return;
+    }
+    if !command_exists("paru") {
+        logs.push(log_pkg_line("paru", "未安装, 跳过.", MsgKind::Warn));
+        return;
+    }
+    state.paru_installed = true;
+    logs.push(log_pkg_line(
+        "paru",
+        "正在检查 AUR 可升级项 (paru -Qua)...",
+        MsgKind::Info,
+    ));
+    let Ok((status, output)) = run_capture("paru", &["-Qua"]) else {
+        state.paru_check_failed = true;
+        logs.push(log_pkg_line(
+            "paru",
+            "检查失败: 无法执行 paru 命令.",
+            MsgKind::Warn,
+        ));
+        return;
+    };
+    if status != 0 {
+        state.paru_check_failed = true;
+        logs.push(log_pkg_line(
+            "paru",
+            &format!("检查失败 (exit {status})."),
+            MsgKind::Warn,
+        ));
+        return;
+    }
+    for line in output.lines().map(str::trim).filter(|x| !x.is_empty()) {
+        if let Some(name) = first_token(line) {
+            state.paru_updatable_packages.push(name);
+        }
+    }
+    if state.paru_updatable_packages.is_empty() {
+        logs.push(log_pkg_line("paru", "AUR 包已是最新.", MsgKind::Ok));
+    } else {
+        state.paru_has_updates = true;
+        logs.push(log_pkg_line("paru", "以下 AUR 包可升级:", MsgKind::Info));
+        for p in &state.paru_updatable_packages {
+            logs.push(format!("  - {p}"));
+        }
+    }
+}
+
+fn check_flatpak_quiet(state: &mut AppState, logs: &mut Vec<String>) {
+    if !state.enable_flatpak {
+        logs.push(log_pkg_line("flatpak", "按系统策略跳过.", MsgKind::Warn));
+        return;
+    }
+    if !command_exists("flatpak") {
+        logs.push(log_pkg_line("flatpak", "未安装, 跳过.", MsgKind::Warn));
+        return;
+    }
+    state.flatpak_installed = true;
+    logs.push(log_pkg_line(
+        "flatpak",
+        "正在检查可升级项 (flatpak remote-ls --updates --columns=application)...",
+        MsgKind::Info,
+    ));
+    let Ok((status, output)) = run_capture(
+        "flatpak",
+        &["remote-ls", "--updates", "--columns=application"],
+    ) else {
+        state.flatpak_check_failed = true;
+        logs.push(log_pkg_line(
+            "flatpak",
+            "检查失败: 无法执行 flatpak 命令.",
+            MsgKind::Warn,
+        ));
+        return;
+    };
+    if status != 0 {
+        state.flatpak_check_failed = true;
+        logs.push(log_pkg_line(
+            "flatpak",
+            &format!("检查失败 (exit {status})."),
+            MsgKind::Warn,
+        ));
+        return;
+    }
+    state.flatpak_updatable_refs = output
+        .lines()
+        .map(str::trim)
+        .filter(|x| !x.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    if state.flatpak_updatable_refs.is_empty() {
+        logs.push(log_pkg_line("flatpak", "已是最新.", MsgKind::Ok));
+    } else {
+        state.flatpak_has_updates = true;
+        logs.push(log_pkg_line("flatpak", "以下应用可升级:", MsgKind::Info));
+        for p in &state.flatpak_updatable_refs {
+            logs.push(format!("  - {p}"));
+        }
+    }
+}
+
+fn check_pacman_quiet(state: &mut AppState, logs: &mut Vec<String>) {
+    if !state.enable_pacman {
+        logs.push(log_pkg_line("pacman", "按系统策略跳过.", MsgKind::Warn));
+        return;
+    }
+    if !command_exists("pacman") {
+        logs.push(log_pkg_line("pacman", "未安装, 跳过.", MsgKind::Warn));
+        return;
+    }
+    state.pacman_installed = true;
+    let (status, output) = if command_exists("checkupdates") {
+        run_capture("checkupdates", &[]).unwrap_or((-1, String::new()))
+    } else {
+        run_capture("pacman", &["-Qu"]).unwrap_or((-1, String::new()))
+    };
+    if status != 0 {
+        if status == 2 {
+            logs.push(log_pkg_line("pacman", "已是最新.", MsgKind::Ok));
+        } else {
+            state.pacman_check_failed = true;
+            logs.push(log_pkg_line(
+                "pacman",
+                &format!("检查失败 (exit {status})."),
+                MsgKind::Warn,
+            ));
+        }
+        return;
+    }
+    for line in output.lines().map(str::trim).filter(|x| !x.is_empty()) {
+        if let Some(name) = first_token(line) {
+            state.pacman_updatable_packages.push(name);
+        }
+    }
+    if state.pacman_updatable_packages.is_empty() {
+        logs.push(log_pkg_line("pacman", "已是最新.", MsgKind::Ok));
+    } else {
+        state.pacman_has_updates = true;
+        logs.push(log_pkg_line("pacman", "以下包可升级:", MsgKind::Info));
+        for p in &state.pacman_updatable_packages {
+            logs.push(format!("  - {p}"));
+        }
+    }
+}
+
+fn run_single_check(target: &str) -> CheckResult {
     let mut local = AppState::default();
+    let mut logs = Vec::new();
     parse_profile(&mut local);
     match target {
-        "brew" => check_brew(&mut local, false),
-        "npm" => check_npm(&mut local, false),
-        "cargo" => check_cargo(&mut local, false),
-        "rustup" => check_rustup(&mut local, false),
-        "paru" => check_paru(&mut local, false),
-        "flatpak" => check_flatpak(&mut local, false),
-        "pacman" => check_pacman(&mut local, false),
+        "brew" => check_brew_quiet(&mut local, &mut logs),
+        "npm" => check_npm_quiet(&mut local, &mut logs),
+        "cargo" => check_cargo_quiet(&mut local, &mut logs),
+        "rustup" => check_rustup_quiet(&mut local, &mut logs),
+        "paru" => check_paru_quiet(&mut local, &mut logs),
+        "flatpak" => check_flatpak_quiet(&mut local, &mut logs),
+        "pacman" => check_pacman_quiet(&mut local, &mut logs),
         _ => {}
     }
-    local
+    CheckResult {
+        target: target.to_string(),
+        state: local,
+        logs,
+    }
 }
 
 fn merge_check_result(state: &mut AppState, target: &str, local: AppState) {
@@ -1002,8 +1619,10 @@ fn run_checks(state: &mut AppState, requested: &[String]) {
     };
 
     let mut handles = Vec::new();
+    let (tx, rx) = mpsc::channel::<String>();
     println!(
-        "[check] 并行检查: {}",
+        "{} {}",
+        color_bold("[check]", TermColor::Yellow),
         targets
             .iter()
             .map(|t| target_label(t))
@@ -1012,15 +1631,35 @@ fn run_checks(state: &mut AppState, requested: &[String]) {
     );
     for target in &targets {
         let t = target.clone();
+        let tx_thread = tx.clone();
         handles.push(thread::spawn(move || {
-            let local = run_single_check(&t);
-            (t, local)
+            let _ = tx_thread.send(log_pkg_line(&t, "开始检查...", MsgKind::Info));
+            let result = run_single_check(&t);
+            let (kind, summary) = summarize_target_status(&t, &result.state);
+            let _ = tx_thread.send(log_pkg_line(&t, &format!("检查完成: {summary}"), kind));
+            result
         }));
     }
+    drop(tx);
 
+    while let Ok(line) = rx.recv() {
+        println!("{line}");
+    }
+
+    let mut logs_map: HashMap<String, Vec<String>> = HashMap::new();
     for h in handles {
-        if let Ok((target, local)) = h.join() {
-            merge_check_result(state, &target, local);
+        if let Ok(result) = h.join() {
+            merge_check_result(state, &result.target, result.state);
+            logs_map.insert(result.target, result.logs);
+        }
+    }
+
+    for target in &targets {
+        print_section(section_title(target));
+        if let Some(lines) = logs_map.get(target) {
+            for line in lines {
+                println!("{line}");
+            }
         }
     }
 }
@@ -1125,10 +1764,10 @@ fn upgrade_selected(selected: &[String]) -> bool {
             .join(", ")
     );
     if run_fail {
-        println!("存在升级失败项.");
+        println!("{}", err_text("存在升级失败项."));
         return false;
     }
-    println!("所有已选升级项执行完成.");
+    println!("{}", ok_text("所有已选升级项执行完成."));
     true
 }
 
@@ -1203,8 +1842,16 @@ fn main() {
     parse_profile(&mut state);
 
     print_section("检查可升级项");
-    println!("开始时间: {}", Local::now().format("%Y-%m-%d %H:%M:%S"));
-    println!("系统策略: {}", profile_name(state.system_profile));
+    println!(
+        "{}: {}",
+        color_bold("开始时间", TermColor::Blue),
+        Local::now().format("%Y-%m-%d %H:%M:%S")
+    );
+    println!(
+        "{}: {}",
+        color_bold("系统策略", TermColor::Blue),
+        profile_name(state.system_profile)
+    );
 
     let requested_updates = match &cli {
         CliCommand::Update(v) => v.clone(),
@@ -1217,9 +1864,9 @@ fn main() {
 
     if upgradable_targets.is_empty() {
         print_section("汇总");
-        println!("没有可升级项.");
+        println!("{}", ok_text("没有可升级项."));
         if any_check_failed(&state) {
-            println!("但有检查失败, 请根据上方日志排查.");
+            println!("{}", warn_text("但有检查失败, 请根据上方日志排查."));
             process::exit(1);
         }
         process::exit(0);
@@ -1233,7 +1880,7 @@ fn main() {
     };
 
     if selected_targets.is_empty() {
-        println!("未选择任何升级项, 已退出.");
+        println!("{}", warn_text("未选择任何升级项, 已退出."));
         process::exit(0);
     }
 
