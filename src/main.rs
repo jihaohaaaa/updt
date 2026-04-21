@@ -166,8 +166,52 @@ fn run_inherit(program: &str, args: &[&str]) -> io::Result<bool> {
     Ok(status.success())
 }
 
+fn run_cargo_install_update_capture(args: &[&str]) -> io::Result<(i32, String)> {
+    let mut proxy_args = vec!["install-update"];
+    proxy_args.extend_from_slice(args);
+    run_capture("cargo-install-update", &proxy_args)
+}
+
+fn run_cargo_install_update_inherit(args: &[&str]) -> io::Result<bool> {
+    let mut proxy_args = vec!["install-update"];
+    proxy_args.extend_from_slice(args);
+    run_inherit("cargo-install-update", &proxy_args)
+}
+
 fn first_json_payload(output: &str) -> Option<&str> {
-    output.find('{').map(|idx| &output[idx..])
+    let start = output.find('{')?;
+    let bytes = output.as_bytes();
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (idx, b) in bytes.iter().enumerate().skip(start) {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match *b {
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match *b {
+            b'"' => in_string = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return output.get(start..=idx);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn first_token(line: &str) -> Option<String> {
@@ -350,10 +394,10 @@ fn parse_cargo_list(output: &str) -> Result<Vec<String>, ()> {
         if line.starts_with("Polling registry ") {
             continue;
         }
-        if line == "Package Installed Latest Needs update" {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.as_slice() == ["Package", "Installed", "Latest", "Needs", "update"] {
             continue;
         }
-        let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() == 4 && parts[1].starts_with('v') && parts[2].starts_with('v') {
             match parts[3] {
                 "Yes" => {
@@ -386,12 +430,20 @@ fn check_cargo(state: &mut AppState) {
         println!("[cargo] 可先执行: cargo install cargo-update");
         return;
     }
+    let updater_exists = run_cargo_install_update_capture(&["--help"])
+        .map(|(code, _)| code == 0)
+        .unwrap_or(false);
+    if !updater_exists {
+        println!("[cargo] 未安装 cargo-install-update, 无法检查已安装 crate 更新.");
+        println!("[cargo] 可先执行: cargo install cargo-update");
+        return;
+    }
     state.cargo_updater_installed = true;
     println!("[cargo] 正在检查已安装 crate 更新 (cargo install-update --list)...");
 
-    let Ok((status, output)) = run_capture("cargo-install-update", &["--list"]) else {
+    let Ok((status, output)) = run_cargo_install_update_capture(&["--list"]) else {
         state.cargo_check_failed = true;
-        println!("[cargo] 检查失败: 无法执行 cargo-install-update 命令.");
+        println!("[cargo] 检查失败: 无法执行 cargo install-update 命令.");
         return;
     };
 
@@ -663,7 +715,7 @@ fn upgrade_selected(selected: &[String]) -> bool {
 
     if selected.iter().any(|s| s == "cargo") {
         println!("[cargo] 正在执行: cargo install-update -a");
-        match run_inherit("cargo", &["install-update", "-a"]) {
+        match run_cargo_install_update_inherit(&["-a"]) {
             Ok(true) => println!("[cargo] 已安装 crate 升级完成."),
             _ => {
                 println!("[cargo] 已安装 crate 升级失败.");
