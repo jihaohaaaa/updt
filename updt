@@ -1,0 +1,640 @@
+#!/usr/bin/env fish
+
+function print_section
+    echo
+    echo "==== $argv ===="
+end
+
+function prompt_yes_no --argument-names message
+    read -l -P "$message [y/N]: " answer
+    switch (string lower -- $answer)
+        case y yes
+            return 0
+        case '*'
+            return 1
+    end
+end
+
+set brew_installed 0
+set brew_has_updates 0
+set brew_check_failed 0
+set brew_formula_list
+set brew_cask_list
+
+set npm_installed 0
+set npm_has_updates 0
+set npm_check_failed 0
+
+set cargo_installed 0
+set cargo_has_updates 0
+set cargo_check_failed 0
+set cargo_updater_installed 0
+set cargo_updatable_packages
+
+set rustup_installed 0
+set rustup_has_updates 0
+set rustup_check_failed 0
+
+set paru_installed 0
+set paru_has_updates 0
+set paru_check_failed 0
+set paru_updatable_packages
+
+set flatpak_installed 0
+set flatpak_has_updates 0
+set flatpak_check_failed 0
+set flatpak_updatable_refs
+
+set pacman_installed 0
+set pacman_has_updates 0
+set pacman_check_failed 0
+set pacman_updatable_packages
+
+set is_arch_linux 0
+if test -f /etc/arch-release
+    set is_arch_linux 1
+end
+
+set system_profile unknown
+set enable_brew 0
+set enable_npm 0
+set enable_cargo 0
+set enable_rustup 0
+set enable_paru 0
+set enable_pacman 0
+set enable_flatpak 0
+
+if test (uname -s) = Darwin
+    set system_profile macos
+    set enable_brew 1
+    set enable_npm 1
+    set enable_cargo 1
+    set enable_rustup 1
+else if test $is_arch_linux -eq 1
+    set system_profile arch
+    set enable_npm 1
+    set enable_cargo 1
+    set enable_rustup 1
+    set enable_paru 1
+    set enable_pacman 1
+    set enable_flatpak 1
+end
+
+print_section 检查可升级项
+echo "开始时间: "(date '+%Y-%m-%d %H:%M:%S')
+echo "系统策略: $system_profile"
+
+if test $enable_brew -eq 1
+    if type -q brew
+        set brew_installed 1
+        print_section Homebrew
+        if not type -q jq
+            set brew_check_failed 1
+            echo "[brew] 检查失败: 需要 jq 解析 brew JSON 输出。"
+            echo "[brew] 可先安装: brew install jq"
+        else
+            echo "[brew] 正在检查可升级项 (brew outdated --greedy --json=v2)..."
+            set brew_json_output (brew outdated --greedy --json=v2 2>&1 | string collect)
+            set brew_outdated_status $status
+
+            if test $brew_outdated_status -ne 0
+                set brew_check_failed 1
+                echo "[brew] 检查失败 (brew outdated --greedy --json=v2, exit $brew_outdated_status):"
+                echo $brew_json_output
+            else
+                set brew_json_lines (string split \n -- $brew_json_output)
+                set brew_json_payload
+                set brew_json_started 0
+                for line in $brew_json_lines
+                    if test $brew_json_started -eq 0
+                        if string match -rq '^[[:space:]]*\{' -- $line
+                            set brew_json_started 1
+                            set -a brew_json_payload $line
+                        end
+                    else
+                        set -a brew_json_payload $line
+                    end
+                end
+
+                if test $brew_json_started -eq 0
+                    set brew_check_failed 1
+                    echo "[brew] 检查失败: 未在输出中找到 JSON 内容。"
+                    echo "[brew] 原始输出: "
+                    echo $brew_json_output
+                else
+                    set brew_json_clean (string join \n $brew_json_payload)
+                    set brew_formula_list (echo $brew_json_clean | jq -r '(.formulae // [])[]?.name')
+                    set jq_formula_status $status
+                    set brew_cask_list (echo $brew_json_clean | jq -r '(.casks // [])[]?.name')
+                    set jq_cask_status $status
+
+                    if test $jq_formula_status -ne 0 -o $jq_cask_status -ne 0
+                        set brew_check_failed 1
+                        echo "[brew] 检查失败: jq 解析 brew JSON 输出失败。"
+                        echo "[brew] 原始输出: "
+                        echo $brew_json_output
+                    else
+                        if test (count $brew_formula_list) -gt 0
+                            set brew_has_updates 1
+                            echo "[brew] Formula 可升级:"
+                            for f in $brew_formula_list
+                                echo "  - $f"
+                            end
+                        else
+                            echo "[brew] Formula: 已是最新。"
+                        end
+
+                        if test (count $brew_cask_list) -gt 0
+                            set brew_has_updates 1
+                            echo "[brew] Cask 可升级:"
+                            for c in $brew_cask_list
+                                echo "  - $c"
+                            end
+                        else
+                            echo "[brew] Cask: 已是最新。"
+                        end
+                    end
+                end
+            end
+        end
+    else
+        print_section Homebrew
+        echo "[brew] 未安装, 跳过。"
+    end
+else
+    print_section Homebrew
+    echo "[brew] 按系统策略跳过。"
+end
+
+if test $enable_npm -eq 1
+if type -q npm
+    set npm_installed 1
+    print_section "npm (global)"
+    echo "[npm] 正在检查全局包更新 (npm outdated --json --global)..."
+
+    set npm_output (npm outdated --json --global 2>&1 | string collect)
+    set npm_status $status
+
+    if test $npm_status -eq 0
+        echo "[npm] 全局包已是最新。"
+    else if test $npm_status -eq 1
+        if not type -q jq
+            set npm_check_failed 1
+            echo "[npm] 检查失败: 需要 jq 解析 npm JSON 输出。"
+        else
+            set npm_pkg_list (echo $npm_output | jq -r 'keys[]?')
+            set npm_parse_status $status
+            if test $npm_parse_status -ne 0
+                set npm_check_failed 1
+                echo "[npm] 检查失败: npm JSON 解析失败。"
+                echo $npm_output
+            else if test (count $npm_pkg_list) -gt 0
+                set npm_has_updates 1
+                echo "[npm] 以下全局包可升级:"
+                for p in $npm_pkg_list
+                    echo "  - $p"
+                end
+            else
+                echo "[npm] 全局包已是最新。"
+            end
+        end
+    else
+        set npm_check_failed 1
+        echo "[npm] 检查失败 (exit $npm_status):"
+        echo $npm_output
+    end
+else
+    print_section "npm (global)"
+    echo "[npm] 未安装, 跳过。"
+end
+else
+    print_section "npm (global)"
+    echo "[npm] 按系统策略跳过。"
+end
+
+if test $enable_cargo -eq 1
+if type -q cargo
+    set cargo_installed 1
+    print_section cargo
+    if type -q cargo-install-update
+        set cargo_updater_installed 1
+        echo "[cargo] 正在检查已安装 crate 更新 (cargo install-update --list)..."
+
+        set cargo_output (cargo install-update --list 2>&1 | string collect)
+        set cargo_status $status
+
+        if test $cargo_status -ne 0
+            set cargo_check_failed 1
+            echo "[cargo] 检查失败 (exit $cargo_status):"
+            echo $cargo_output
+        else
+            set cargo_parse_error 0
+            set cargo_updatable_packages
+            set cargo_lines (string split \n -- $cargo_output)
+            for line in $cargo_lines
+                set trimmed (string trim -- $line)
+                if test -z "$trimmed"
+                    continue
+                end
+                if string match -rq '^Polling registry ' -- $trimmed
+                    continue
+                end
+                if string match -rq '^Package[[:space:]]+Installed[[:space:]]+Latest[[:space:]]+Needs update$' -- $trimmed
+                    continue
+                end
+                if string match -rq '^[A-Za-z0-9_.+-]+[[:space:]]+v[^[:space:]]+[[:space:]]+v[^[:space:]]+[[:space:]]+Yes$' -- $trimmed
+                    set pkg_name (string split -m1 -f1 ' ' -- $trimmed)
+                    set -a cargo_updatable_packages $pkg_name
+                    continue
+                end
+                if string match -rq '^[A-Za-z0-9_.+-]+[[:space:]]+v[^[:space:]]+[[:space:]]+v[^[:space:]]+[[:space:]]+No$' -- $trimmed
+                    continue
+                end
+                set cargo_parse_error 1
+                break
+            end
+
+            if test $cargo_parse_error -eq 1
+                set cargo_check_failed 1
+                echo "[cargo] 检查失败: 无法按表格格式解析 cargo install-update --list 输出。"
+                echo "[cargo] 原始输出如下: "
+                echo $cargo_output
+            else if test (count $cargo_updatable_packages) -gt 0
+                set cargo_has_updates 1
+                echo "[cargo] 以下 crate 可升级:"
+                for p in $cargo_updatable_packages
+                    echo "  - $p"
+                end
+            else
+                echo "[cargo] 已安装 crate 已是最新。"
+            end
+        end
+    else
+        echo "[cargo] 未安装 cargo-install-update, 无法检查已安装 crate 更新。"
+        echo "[cargo] 可先执行: cargo install cargo-update"
+    end
+else
+    print_section cargo
+    echo "[cargo] 未安装, 跳过。"
+end
+else
+    print_section cargo
+    echo "[cargo] 按系统策略跳过。"
+end
+
+if test $enable_rustup -eq 1
+if type -q rustup
+    set rustup_installed 1
+    print_section rustup
+    echo "[rustup] 正在检查 toolchain 更新 (rustup check --no-self-update)..."
+
+    set rustup_output (rustup check --no-self-update 2>&1 | string collect)
+    set rustup_status $status
+
+    switch $rustup_status
+        case 0
+            echo "[rustup] toolchain 已是最新。"
+        case 100
+            set rustup_has_updates 1
+            echo "[rustup] 以下 toolchain 可升级:"
+            for l in (string split \n -- $rustup_output)
+                set line (string trim -- $l)
+                if test -n "$line"
+                    echo "  - $line"
+                end
+            end
+        case '*'
+            set rustup_check_failed 1
+            echo "[rustup] 检查失败 (exit $rustup_status):"
+            echo $rustup_output
+    end
+else
+    print_section rustup
+    echo "[rustup] 未安装, 跳过。"
+end
+else
+    print_section rustup
+    echo "[rustup] 按系统策略跳过。"
+end
+
+if test $enable_paru -eq 1
+if type -q paru
+    set paru_installed 1
+    print_section "paru (AUR)"
+    if test $is_arch_linux -ne 1
+        echo "[paru] 检测到非 Arch Linux 环境, 将按可用命令尝试检查。"
+    end
+
+    echo "[paru] 正在检查 AUR 可升级项 (paru -Qua)..."
+    set paru_output (paru -Qua 2>&1 | string collect)
+    set paru_status $status
+
+    if test $paru_status -ne 0
+        set paru_check_failed 1
+        echo "[paru] 检查失败 (exit $paru_status):"
+        echo $paru_output
+    else
+        for l in (string split \n -- $paru_output)
+            set line (string trim -- $l)
+            if test -z "$line"
+                continue
+            end
+            set pkg_name (string split -m1 -f1 ' ' -- $line)
+            if test -n "$pkg_name"
+                set -a paru_updatable_packages $pkg_name
+            end
+        end
+
+        if test (count $paru_updatable_packages) -gt 0
+            set paru_has_updates 1
+            echo "[paru] 以下 AUR 包可升级:"
+            for p in $paru_updatable_packages
+                echo "  - $p"
+            end
+        else
+            echo "[paru] AUR 包已是最新。"
+        end
+    end
+else
+    print_section "paru (AUR)"
+    echo "[paru] 未安装, 跳过。"
+end
+else
+    print_section "paru (AUR)"
+    echo "[paru] 按系统策略跳过。"
+end
+
+if test $enable_flatpak -eq 1
+if type -q flatpak
+    set flatpak_installed 1
+    print_section flatpak
+    echo "[flatpak] 正在检查可升级项 (flatpak remote-ls --updates --columns=application)..."
+
+    set flatpak_output (flatpak remote-ls --updates --columns=application 2>&1 | string collect)
+    set flatpak_status $status
+
+    if test $flatpak_status -ne 0
+        set flatpak_check_failed 1
+        echo "[flatpak] 检查失败 (exit $flatpak_status):"
+        echo $flatpak_output
+    else
+        for l in (string split \n -- $flatpak_output)
+            set line (string trim -- $l)
+            if test -n "$line"
+                set -a flatpak_updatable_refs $line
+            end
+        end
+
+        if test (count $flatpak_updatable_refs) -gt 0
+            set flatpak_has_updates 1
+            echo "[flatpak] 以下应用可升级:"
+            for app in $flatpak_updatable_refs
+                echo "  - $app"
+            end
+        else
+            echo "[flatpak] 已是最新。"
+        end
+    end
+else
+    print_section flatpak
+    echo "[flatpak] 未安装, 跳过。"
+end
+else
+    print_section flatpak
+    echo "[flatpak] 按系统策略跳过。"
+end
+
+if test $enable_pacman -eq 1
+if type -q pacman
+    set pacman_installed 1
+    print_section pacman
+    if test $is_arch_linux -ne 1
+        echo "[pacman] 检测到非 Arch Linux 环境, 将按可用命令尝试检查。"
+    end
+
+    if type -q checkupdates
+        echo "[pacman] 正在检查可升级项 (checkupdates)..."
+        set pacman_output (checkupdates 2>&1 | string collect)
+        set pacman_status $status
+    else
+        echo "[pacman] 未安装 checkupdates，回退到 pacman -Qu。"
+        set pacman_output (pacman -Qu 2>&1 | string collect)
+        set pacman_status $status
+    end
+
+    if test $pacman_status -ne 0
+        if test $pacman_status -eq 2
+            echo "[pacman] 已是最新。"
+        else
+            set pacman_check_failed 1
+            echo "[pacman] 检查失败 (exit $pacman_status):"
+            echo $pacman_output
+        end
+    else
+        for l in (string split \n -- $pacman_output)
+            set line (string trim -- $l)
+            if test -z "$line"
+                continue
+            end
+            set pkg_name (string split -m1 -f1 ' ' -- $line)
+            if test -n "$pkg_name"
+                set -a pacman_updatable_packages $pkg_name
+            end
+        end
+
+        if test (count $pacman_updatable_packages) -gt 0
+            set pacman_has_updates 1
+            echo "[pacman] 以下包可升级:"
+            for p in $pacman_updatable_packages
+                echo "  - $p"
+            end
+        else
+            echo "[pacman] 已是最新。"
+        end
+    end
+else
+    print_section pacman
+    echo "[pacman] 未安装, 跳过。"
+end
+else
+    print_section pacman
+    echo "[pacman] 按系统策略跳过。"
+end
+
+set upgradable_targets
+if test $brew_has_updates -eq 1
+    set -a upgradable_targets Homebrew
+end
+if test $npm_has_updates -eq 1
+    set -a upgradable_targets npm
+end
+if test $cargo_has_updates -eq 1
+    set -a upgradable_targets cargo
+end
+if test $rustup_has_updates -eq 1
+    set -a upgradable_targets rustup
+end
+if test $paru_has_updates -eq 1
+    set -a upgradable_targets paru
+end
+if test $flatpak_has_updates -eq 1
+    set -a upgradable_targets flatpak
+end
+if test $pacman_has_updates -eq 1
+    set -a upgradable_targets pacman
+end
+
+if test (count $upgradable_targets) -eq 0
+    print_section 汇总
+    echo "没有可升级项。"
+    if test $brew_check_failed -eq 1 -o $npm_check_failed -eq 1 -o $cargo_check_failed -eq 1 -o $rustup_check_failed -eq 1 -o $paru_check_failed -eq 1 -o $flatpak_check_failed -eq 1 -o $pacman_check_failed -eq 1
+        echo "但有检查失败, 请根据上方日志排查。"
+        exit 1
+    end
+    exit 0
+end
+
+print_section 选择要升级的项目
+set selected_targets
+
+if type -q fzf
+    echo "使用 fzf 多选(Tab 选择, Enter 确认): "
+    set selected_targets (printf '%s\n' $upgradable_targets | fzf \
+        --multi \
+        --height 10 \
+        --layout=reverse \
+        --border \
+        --prompt='选择升级项 > ' \
+        --header='可多选: Homebrew / npm / cargo / rustup / paru / flatpak / pacman')
+else
+    echo "未安装 fzf, 改为逐项确认。"
+    if contains Homebrew $upgradable_targets
+        if prompt_yes_no "是否升级 Homebrew"
+            set -a selected_targets Homebrew
+        end
+    end
+    if contains npm $upgradable_targets
+        if prompt_yes_no "是否升级 npm 全局包"
+            set -a selected_targets npm
+        end
+    end
+    if contains cargo $upgradable_targets
+        if prompt_yes_no "是否升级 cargo 已安装 crate"
+            set -a selected_targets cargo
+        end
+    end
+    if contains rustup $upgradable_targets
+        if prompt_yes_no "是否升级 rustup toolchain"
+            set -a selected_targets rustup
+        end
+    end
+    if contains paru $upgradable_targets
+        if prompt_yes_no "是否升级 paru (AUR)"
+            set -a selected_targets paru
+        end
+    end
+    if contains flatpak $upgradable_targets
+        if prompt_yes_no "是否升级 flatpak 应用"
+            set -a selected_targets flatpak
+        end
+    end
+    if contains pacman $upgradable_targets
+        if prompt_yes_no "是否升级 pacman 包 (sudo pacman -Syu)"
+            set -a selected_targets pacman
+        end
+    end
+end
+
+if test (count $selected_targets) -eq 0
+    echo "未选择任何升级项, 已退出。"
+    exit 0
+end
+
+print_section 执行升级
+set run_fail 0
+
+if contains Homebrew $selected_targets
+    echo "[brew] 正在刷新索引: brew update --quiet"
+    if brew update --quiet
+        echo "[brew] 正在执行: brew upgrade --greedy"
+        if brew upgrade --greedy
+            echo "[brew] 升级完成。"
+        else
+            echo "[brew] 升级失败。"
+            set run_fail 1
+        end
+    else
+        echo "[brew] 升级失败: brew update 失败。"
+        set run_fail 1
+    end
+end
+
+if contains npm $selected_targets
+    echo "[npm] 正在执行: npm update -g"
+    if npm update -g
+        echo "[npm] 全局包升级完成。"
+    else
+        echo "[npm] 全局包升级失败。"
+        set run_fail 1
+    end
+end
+
+if contains cargo $selected_targets
+    echo "[cargo] 正在执行: cargo install-update -a"
+    if cargo install-update -a
+        echo "[cargo] 已安装 crate 升级完成。"
+    else
+        echo "[cargo] 已安装 crate 升级失败。"
+        set run_fail 1
+    end
+end
+
+if contains rustup $selected_targets
+    echo "[rustup] 正在执行: rustup update"
+    if rustup update
+        echo "[rustup] toolchain 升级完成。"
+    else
+        echo "[rustup] toolchain 升级失败。"
+        set run_fail 1
+    end
+end
+
+if contains paru $selected_targets
+    echo "[paru] 正在执行: paru -Sua"
+    if paru -Sua
+        echo "[paru] AUR 包升级完成。"
+    else
+        echo "[paru] AUR 包升级失败。"
+        set run_fail 1
+    end
+end
+
+if contains flatpak $selected_targets
+    echo "[flatpak] 正在执行: flatpak update"
+    if flatpak update
+        echo "[flatpak] 应用升级完成。"
+    else
+        echo "[flatpak] 应用升级失败。"
+        set run_fail 1
+    end
+end
+
+if contains pacman $selected_targets
+    echo "[pacman] 正在执行: sudo pacman -Syu"
+    if sudo pacman -Syu
+        echo "[pacman] 包升级完成。"
+    else
+        echo "[pacman] 包升级失败。"
+        set run_fail 1
+    end
+end
+
+print_section 汇总
+echo "已选择升级项: "(string join ', ' $selected_targets)
+if test $run_fail -eq 1
+    echo "存在升级失败项。"
+    exit 1
+end
+
+echo "所有已选升级项执行完成。"
+exit 0
