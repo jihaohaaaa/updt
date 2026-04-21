@@ -20,6 +20,7 @@ use std::io::{self, IsTerminal, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command, Stdio};
+use std::thread;
 use std::time::Duration;
 
 const TARGET_IDS: [&str; 7] = [
@@ -475,8 +476,10 @@ fn profile_name(profile: SystemProfile) -> &'static str {
     }
 }
 
-fn check_brew(state: &mut AppState) {
-    print_section("Homebrew");
+fn check_brew(state: &mut AppState, show_section: bool) {
+    if show_section {
+        print_section("Homebrew");
+    }
     if !state.enable_brew {
         println!("[brew] 按系统策略跳过.");
         return;
@@ -556,8 +559,10 @@ fn check_brew(state: &mut AppState) {
     }
 }
 
-fn check_npm(state: &mut AppState) {
-    print_section("npm (global)");
+fn check_npm(state: &mut AppState, show_section: bool) {
+    if show_section {
+        print_section("npm (global)");
+    }
     if !state.enable_npm {
         println!("[npm] 按系统策略跳过.");
         return;
@@ -643,8 +648,10 @@ fn parse_cargo_list(output: &str) -> Result<Vec<String>, ()> {
     Ok(pkgs)
 }
 
-fn check_cargo(state: &mut AppState) {
-    print_section("cargo");
+fn check_cargo(state: &mut AppState, show_section: bool) {
+    if show_section {
+        print_section("cargo");
+    }
     if !state.enable_cargo {
         println!("[cargo] 按系统策略跳过.");
         return;
@@ -703,8 +710,10 @@ fn check_cargo(state: &mut AppState) {
     }
 }
 
-fn check_rustup(state: &mut AppState) {
-    print_section("rustup");
+fn check_rustup(state: &mut AppState, show_section: bool) {
+    if show_section {
+        print_section("rustup");
+    }
     if !state.enable_rustup {
         println!("[rustup] 按系统策略跳过.");
         return;
@@ -742,8 +751,10 @@ fn check_rustup(state: &mut AppState) {
     }
 }
 
-fn check_paru(state: &mut AppState) {
-    print_section("paru (AUR)");
+fn check_paru(state: &mut AppState, show_section: bool) {
+    if show_section {
+        print_section("paru (AUR)");
+    }
     if !state.enable_paru {
         println!("[paru] 按系统策略跳过.");
         return;
@@ -792,8 +803,10 @@ fn check_paru(state: &mut AppState) {
     }
 }
 
-fn check_flatpak(state: &mut AppState) {
-    print_section("flatpak");
+fn check_flatpak(state: &mut AppState, show_section: bool) {
+    if show_section {
+        print_section("flatpak");
+    }
     if !state.enable_flatpak {
         println!("[flatpak] 按系统策略跳过.");
         return;
@@ -839,8 +852,10 @@ fn check_flatpak(state: &mut AppState) {
     }
 }
 
-fn check_pacman(state: &mut AppState) {
-    print_section("pacman");
+fn check_pacman(state: &mut AppState, show_section: bool) {
+    if show_section {
+        print_section("pacman");
+    }
     if !state.enable_pacman {
         println!("[pacman] 按系统策略跳过.");
         return;
@@ -909,28 +924,103 @@ fn check_pacman(state: &mut AppState) {
     }
 }
 
+fn run_single_check(target: &str) -> AppState {
+    let mut local = AppState::default();
+    parse_profile(&mut local);
+    match target {
+        "brew" => check_brew(&mut local, false),
+        "npm" => check_npm(&mut local, false),
+        "cargo" => check_cargo(&mut local, false),
+        "rustup" => check_rustup(&mut local, false),
+        "paru" => check_paru(&mut local, false),
+        "flatpak" => check_flatpak(&mut local, false),
+        "pacman" => check_pacman(&mut local, false),
+        _ => {}
+    }
+    local
+}
+
+fn merge_check_result(state: &mut AppState, target: &str, local: AppState) {
+    match target {
+        "brew" => {
+            state.brew_installed = local.brew_installed;
+            state.brew_has_updates = local.brew_has_updates;
+            state.brew_check_failed = local.brew_check_failed;
+            state.brew_formula_list = local.brew_formula_list;
+            state.brew_cask_list = local.brew_cask_list;
+        }
+        "npm" => {
+            state.npm_installed = local.npm_installed;
+            state.npm_has_updates = local.npm_has_updates;
+            state.npm_check_failed = local.npm_check_failed;
+        }
+        "cargo" => {
+            state.cargo_installed = local.cargo_installed;
+            state.cargo_has_updates = local.cargo_has_updates;
+            state.cargo_check_failed = local.cargo_check_failed;
+            state.cargo_updater_installed = local.cargo_updater_installed;
+            state.cargo_updatable_packages = local.cargo_updatable_packages;
+        }
+        "rustup" => {
+            state.rustup_installed = local.rustup_installed;
+            state.rustup_has_updates = local.rustup_has_updates;
+            state.rustup_check_failed = local.rustup_check_failed;
+        }
+        "paru" => {
+            state.paru_installed = local.paru_installed;
+            state.paru_has_updates = local.paru_has_updates;
+            state.paru_check_failed = local.paru_check_failed;
+            state.paru_updatable_packages = local.paru_updatable_packages;
+        }
+        "flatpak" => {
+            state.flatpak_installed = local.flatpak_installed;
+            state.flatpak_has_updates = local.flatpak_has_updates;
+            state.flatpak_check_failed = local.flatpak_check_failed;
+            state.flatpak_updatable_refs = local.flatpak_updatable_refs;
+        }
+        "pacman" => {
+            state.pacman_installed = local.pacman_installed;
+            state.pacman_has_updates = local.pacman_has_updates;
+            state.pacman_check_failed = local.pacman_check_failed;
+            state.pacman_updatable_packages = local.pacman_updatable_packages;
+        }
+        _ => {}
+    }
+}
+
 fn run_checks(state: &mut AppState, requested: &[String]) {
-    if requested.is_empty() {
-        check_brew(state);
-        check_npm(state);
-        check_cargo(state);
-        check_rustup(state);
-        check_paru(state);
-        check_flatpak(state);
-        check_pacman(state);
-        return;
+    let targets: Vec<String> = if requested.is_empty() {
+        TARGET_IDS.iter().map(|x| x.to_string()).collect()
+    } else {
+        let mut uniq = Vec::new();
+        for t in requested {
+            if !uniq.iter().any(|x: &String| x == t) {
+                uniq.push(t.clone());
+            }
+        }
+        uniq
+    };
+
+    let mut handles = Vec::new();
+    println!(
+        "[check] 并行检查: {}",
+        targets
+            .iter()
+            .map(|t| target_label(t))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    for target in &targets {
+        let t = target.clone();
+        handles.push(thread::spawn(move || {
+            let local = run_single_check(&t);
+            (t, local)
+        }));
     }
 
-    for target in requested {
-        match target.as_str() {
-            "brew" => check_brew(state),
-            "npm" => check_npm(state),
-            "cargo" => check_cargo(state),
-            "rustup" => check_rustup(state),
-            "paru" => check_paru(state),
-            "flatpak" => check_flatpak(state),
-            "pacman" => check_pacman(state),
-            _ => {}
+    for h in handles {
+        if let Ok((target, local)) = h.join() {
+            merge_check_result(state, &target, local);
         }
     }
 }

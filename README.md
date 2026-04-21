@@ -41,6 +41,8 @@ The program does 3 stages.
 2. Select targets to upgrade.
 3. Run upgrades for selected targets.
 
+Check stage runs in parallel across enabled targets for faster detection.
+
 Default selection is TUI:
 
 - `Up` / `Down`: move cursor
