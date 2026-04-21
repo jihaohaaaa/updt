@@ -1,12 +1,25 @@
 use chrono::Local;
+use crossterm::{
+    event::{self, Event, KeyCode, KeyEventKind},
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+};
+use ratatui::{
+    Terminal,
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout},
+    style::{Color, Modifier, Style},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+};
 use serde_json::Value;
 use std::env;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command, Stdio};
+use std::time::Duration;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SystemProfile {
@@ -102,16 +115,6 @@ impl Default for AppState {
 fn print_section(title: &str) {
     println!();
     println!("==== {title} ====");
-}
-
-fn prompt_yes_no(message: &str) -> bool {
-    print!("{message} [y/N]: ");
-    let _ = io::stdout().flush();
-    let mut answer = String::new();
-    if io::stdin().read_line(&mut answer).is_err() {
-        return false;
-    }
-    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 fn command_exists(name: &str) -> bool {
@@ -216,6 +219,158 @@ fn first_json_payload(output: &str) -> Option<&str> {
 
 fn first_token(line: &str) -> Option<String> {
     line.split_whitespace().next().map(ToOwned::to_owned)
+}
+
+struct TerminalGuard {
+    active: bool,
+}
+
+impl TerminalGuard {
+    fn enter() -> io::Result<Self> {
+        enable_raw_mode()?;
+        execute!(io::stdout(), EnterAlternateScreen)?;
+        Ok(Self { active: true })
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        }
+    }
+}
+
+fn select_targets_prompt(upgradable_targets: &[String]) -> Vec<String> {
+    let mut selected_targets = Vec::<String>::new();
+    println!("逐项确认待升级项目.");
+
+    for target in upgradable_targets {
+        let message = match target.as_str() {
+            "Homebrew" => "是否升级 Homebrew",
+            "npm" => "是否升级 npm 全局包",
+            "cargo" => "是否升级 cargo 已安装 crate",
+            "rustup" => "是否升级 rustup toolchain",
+            "paru" => "是否升级 paru (AUR)",
+            "flatpak" => "是否升级 flatpak 应用",
+            "pacman" => "是否升级 pacman 包 (sudo pacman -Syu)",
+            _ => continue,
+        };
+        print!("{message} [y/N]: ");
+        let _ = io::stdout().flush();
+        let mut answer = String::new();
+        if io::stdin().read_line(&mut answer).is_ok()
+            && matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+        {
+            selected_targets.push(target.clone());
+        }
+    }
+    selected_targets
+}
+
+fn select_targets_tui(upgradable_targets: &[String]) -> io::Result<Vec<String>> {
+    if upgradable_targets.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let _guard = TerminalGuard::enter()?;
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend)?;
+    let mut cursor = 0usize;
+    let mut selected = vec![false; upgradable_targets.len()];
+
+    loop {
+        terminal.draw(|frame| {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(3), Constraint::Min(1)])
+                .split(frame.area());
+
+            let help = Paragraph::new("Up/Down: move, Space: toggle, Enter: confirm, q/Esc: quit")
+                .block(Block::default().title("updt").borders(Borders::ALL));
+            frame.render_widget(help, chunks[0]);
+
+            let items: Vec<ListItem> = upgradable_targets
+                .iter()
+                .enumerate()
+                .map(|(idx, item)| {
+                    let mark = if selected[idx] { "[x]" } else { "[ ]" };
+                    ListItem::new(format!("{mark} {item}"))
+                })
+                .collect();
+
+            let list = List::new(items)
+                .block(
+                    Block::default()
+                        .title("选择要升级的项目")
+                        .borders(Borders::ALL),
+                )
+                .highlight_style(
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .highlight_symbol(">> ");
+
+            let mut list_state = ListState::default();
+            list_state.select(Some(cursor));
+            frame.render_stateful_widget(list, chunks[1], &mut list_state);
+        })?;
+
+        if !event::poll(Duration::from_millis(250))? {
+            continue;
+        }
+
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+
+        match key.code {
+            KeyCode::Up => {
+                cursor = cursor.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                if cursor + 1 < upgradable_targets.len() {
+                    cursor += 1;
+                }
+            }
+            KeyCode::Char(' ') => {
+                selected[cursor] = !selected[cursor];
+            }
+            KeyCode::Enter => {
+                let chosen = upgradable_targets
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, item)| {
+                        if selected[idx] {
+                            Some(item.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                return Ok(chosen);
+            }
+            KeyCode::Esc | KeyCode::Char('q') => return Ok(Vec::new()),
+            _ => {}
+        }
+    }
+}
+
+fn select_targets(upgradable_targets: &[String]) -> Vec<String> {
+    if io::stdout().is_terminal() && io::stdin().is_terminal() {
+        match select_targets_tui(upgradable_targets) {
+            Ok(chosen) => return chosen,
+            Err(err) => {
+                eprintln!("[ui] TUI 初始化失败, 自动回退文本交互: {err}");
+            }
+        }
+    }
+    select_targets_prompt(upgradable_targets)
 }
 
 fn parse_profile(state: &mut AppState) {
@@ -835,24 +990,7 @@ fn main() {
     }
 
     print_section("选择要升级的项目");
-    let mut selected_targets = Vec::<String>::new();
-    println!("逐项确认待升级项目.");
-
-    for target in &upgradable_targets {
-        let message = match target.as_str() {
-            "Homebrew" => "是否升级 Homebrew",
-            "npm" => "是否升级 npm 全局包",
-            "cargo" => "是否升级 cargo 已安装 crate",
-            "rustup" => "是否升级 rustup toolchain",
-            "paru" => "是否升级 paru (AUR)",
-            "flatpak" => "是否升级 flatpak 应用",
-            "pacman" => "是否升级 pacman 包 (sudo pacman -Syu)",
-            _ => continue,
-        };
-        if prompt_yes_no(message) {
-            selected_targets.push(target.clone());
-        }
-    }
+    let selected_targets = select_targets(&upgradable_targets);
 
     if selected_targets.is_empty() {
         println!("未选择任何升级项, 已退出.");

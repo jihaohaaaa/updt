@@ -1,6 +1,6 @@
 [package]
 name = "updt"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "Cross-platform system update helper for brew, npm, cargo, rustup, paru, flatpak, and pacman."
 license = "MIT"
@@ -13,3 +13,4 @@ clap = "4.6.1"
 ratatui = "0.30.0"
 chrono = { version = "0.4.42", default-features = true }
 serde_json = "1.0.145"
+crossterm = "0.29.0"
