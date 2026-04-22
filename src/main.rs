@@ -1152,7 +1152,13 @@ fn check_paru_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         ));
         return;
     };
+    let trimmed_output = output.trim();
     if status != 0 {
+        if status == 1 && trimmed_output.is_empty() {
+            // paru -Qua 在无更新时返回 1 且无输出, 这不是失败.
+            logs.push(log_pkg_line("paru", "AUR 包已是最新.", MsgKind::Ok));
+            return;
+        }
         state.paru_check_failed = true;
         logs.push(log_pkg_line(
             "paru",
@@ -1161,7 +1167,7 @@ fn check_paru_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         ));
         return;
     }
-    for line in output.lines().map(str::trim).filter(|x| !x.is_empty()) {
+    for line in trimmed_output.lines().map(str::trim).filter(|x| !x.is_empty()) {
         if let Some(name) = first_token(line) {
             state.paru_updatable_packages.push(name);
         }
