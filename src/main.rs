@@ -1831,10 +1831,36 @@ fn confirm_default_yes(prompt: &str) -> bool {
     )
 }
 
+fn strip_ansi_control_sequences(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            if chars.peek().is_some_and(|next| *next == '[') {
+                let _ = chars.next();
+                for c in chars.by_ref() {
+                    if c.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(ch);
+    }
+    out
+}
+
 fn wait_tui_message(terminal: &mut AppTerminal, title: &str, lines: &[String]) -> io::Result<bool> {
+    let clean_text = lines
+        .iter()
+        .map(|line| strip_ansi_control_sequences(line))
+        .collect::<Vec<_>>()
+        .join("\n");
     loop {
         terminal.draw(|frame| {
-            let block = Paragraph::new(lines.join("\n"))
+            let block = Paragraph::new(clean_text.as_str())
                 .block(Block::default().title(title).borders(Borders::ALL));
             frame.render_widget(block, frame.area());
         })?;
