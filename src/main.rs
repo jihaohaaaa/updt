@@ -23,7 +23,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command, Stdio};
 use std::sync::OnceLock;
-use std::sync::mpsc;
+use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
@@ -55,6 +55,7 @@ struct AppState {
     npm_installed: bool,
     npm_has_updates: bool,
     npm_check_failed: bool,
+    npm_updatable_packages: Vec<String>,
     cargo_installed: bool,
     cargo_has_updates: bool,
     cargo_check_failed: bool,
@@ -63,6 +64,7 @@ struct AppState {
     rustup_installed: bool,
     rustup_has_updates: bool,
     rustup_check_failed: bool,
+    rustup_updatable_toolchains: Vec<String>,
     paru_installed: bool,
     paru_has_updates: bool,
     paru_check_failed: bool,
@@ -103,6 +105,7 @@ impl Default for AppState {
             npm_installed: false,
             npm_has_updates: false,
             npm_check_failed: false,
+            npm_updatable_packages: vec![],
             cargo_installed: false,
             cargo_has_updates: false,
             cargo_check_failed: false,
@@ -111,6 +114,7 @@ impl Default for AppState {
             rustup_installed: false,
             rustup_has_updates: false,
             rustup_check_failed: false,
+            rustup_updatable_toolchains: vec![],
             paru_installed: false,
             paru_has_updates: false,
             paru_check_failed: false,
@@ -239,17 +243,6 @@ enum MsgKind {
 fn pkg_color(pkg: &str) -> TermColor {
     let _ = pkg;
     TermColor::Cyan
-}
-
-#[allow(dead_code)]
-fn log_pkg(pkg: &str, msg: &str, kind: MsgKind) {
-    let prefix = color_bold(&format!("[{pkg}]"), pkg_color(pkg));
-    let body = match kind {
-        MsgKind::Info => color(msg, TermColor::White),
-        MsgKind::Ok => ok_text(msg),
-        MsgKind::Warn => warn_text(msg),
-    };
-    println!("{prefix} {body}");
 }
 
 fn log_pkg_line(pkg: &str, msg: &str, kind: MsgKind) -> String {
@@ -528,6 +521,25 @@ fn first_token(line: &str) -> Option<String> {
     line.split_whitespace().next().map(ToOwned::to_owned)
 }
 
+fn updatable_items_for_target(state: &AppState, target: &str) -> Vec<String> {
+    match target {
+        "brew" => state
+            .brew_formula_list
+            .iter()
+            .chain(state.brew_cask_list.iter())
+            .cloned()
+            .collect(),
+        "npm" => state.npm_updatable_packages.clone(),
+        "cargo" => state.cargo_updatable_packages.clone(),
+        "rustup" => state.rustup_updatable_toolchains.clone(),
+        "paru" => state.paru_updatable_packages.clone(),
+        "flatpak" => state.flatpak_updatable_refs.clone(),
+        "pacman" => state.pacman_updatable_packages.clone(),
+        "pkg" => state.pkg_updatable_packages.clone(),
+        _ => Vec::new(),
+    }
+}
+
 struct TerminalGuard {
     active: bool,
 }
@@ -549,11 +561,19 @@ impl Drop for TerminalGuard {
     }
 }
 
-fn select_targets_prompt(upgradable_targets: &[String]) -> Vec<String> {
+fn print_target_updatable_items(state: &AppState, target: &str) {
+    for item in updatable_items_for_target(state, target) {
+        println!("  - {item}");
+    }
+}
+
+fn select_targets_prompt(state: &AppState, upgradable_targets: &[String]) -> Vec<String> {
     let mut selected_targets = Vec::<String>::new();
     println!("逐项确认待升级项目.");
 
     for target in upgradable_targets {
+        println!("{}", target_label(target));
+        print_target_updatable_items(state, target);
         let message = format!("是否升级 {}", target_label(target));
         print!("{message} [y/N]: ");
         let _ = io::stdout().flush();
@@ -567,7 +587,15 @@ fn select_targets_prompt(upgradable_targets: &[String]) -> Vec<String> {
     selected_targets
 }
 
-fn select_targets_tui(upgradable_targets: &[String]) -> io::Result<Vec<String>> {
+fn target_row_index(upgradable_targets: &[String], target_idx: usize, state: &AppState) -> usize {
+    upgradable_targets
+        .iter()
+        .take(target_idx)
+        .map(|target| 1 + updatable_items_for_target(state, target).len())
+        .sum()
+}
+
+fn select_targets_tui(state: &AppState, upgradable_targets: &[String]) -> io::Result<Vec<String>> {
     if upgradable_targets.is_empty() {
         return Ok(Vec::new());
     }
@@ -592,9 +620,18 @@ fn select_targets_tui(upgradable_targets: &[String]) -> io::Result<Vec<String>> 
             let items: Vec<ListItem> = upgradable_targets
                 .iter()
                 .enumerate()
-                .map(|(idx, item)| {
+                .flat_map(|(idx, item)| {
                     let mark = if selected[idx] { "[x]" } else { "[ ]" };
-                    ListItem::new(format!("{mark} {}", target_label(item)))
+                    let mut rows = vec![
+                        ListItem::new(format!("{mark} {}", target_label(item)))
+                            .style(Style::default().add_modifier(Modifier::BOLD)),
+                    ];
+                    rows.extend(
+                        updatable_items_for_target(state, item)
+                            .into_iter()
+                            .map(|pkg| ListItem::new(format!("  - {pkg}"))),
+                    );
+                    rows
                 })
                 .collect();
 
@@ -612,7 +649,7 @@ fn select_targets_tui(upgradable_targets: &[String]) -> io::Result<Vec<String>> 
                 .highlight_symbol(">> ");
 
             let mut list_state = ListState::default();
-            list_state.select(Some(cursor));
+            list_state.select(Some(target_row_index(upgradable_targets, cursor, state)));
             frame.render_stateful_widget(list, chunks[1], &mut list_state);
         })?;
 
@@ -657,16 +694,16 @@ fn select_targets_tui(upgradable_targets: &[String]) -> io::Result<Vec<String>> 
     }
 }
 
-fn select_targets(upgradable_targets: &[String]) -> Vec<String> {
+fn select_targets(state: &AppState, upgradable_targets: &[String]) -> Vec<String> {
     if io::stdout().is_terminal() && io::stdin().is_terminal() {
-        match select_targets_tui(upgradable_targets) {
+        match select_targets_tui(state, upgradable_targets) {
             Ok(chosen) => return chosen,
             Err(err) => {
                 eprintln!("[ui] TUI 初始化失败, 自动回退文本交互: {err}");
             }
         }
     }
-    select_targets_prompt(upgradable_targets)
+    select_targets_prompt(state, upgradable_targets)
 }
 
 fn install_fish_completion() -> io::Result<PathBuf> {
@@ -759,159 +796,6 @@ fn target_enabled(state: &AppState, target: &str) -> bool {
     }
 }
 
-#[allow(dead_code)]
-fn check_brew(state: &mut AppState, show_section: bool) {
-    if show_section {
-        print_section("Homebrew");
-    }
-    if !state.enable_brew {
-        println!("[brew] 按系统策略跳过.");
-        return;
-    }
-    if !command_exists("brew") {
-        println!("[brew] 未安装, 跳过.");
-        return;
-    }
-
-    state.brew_installed = true;
-    log_pkg(
-        "brew",
-        "正在检查可升级项 (brew outdated --greedy --json=v2)...",
-        MsgKind::Info,
-    );
-    let Ok((status, output)) = run_capture("brew", &["outdated", "--greedy", "--json=v2"]) else {
-        state.brew_check_failed = true;
-        println!("[brew] 检查失败: 无法执行 brew 命令.");
-        return;
-    };
-
-    if status != 0 {
-        state.brew_check_failed = true;
-        println!("[brew] 检查失败 (brew outdated --greedy --json=v2, exit {status}):");
-        print!("{output}");
-        return;
-    }
-
-    let Some(json_text) = first_json_payload(&output) else {
-        state.brew_check_failed = true;
-        println!("[brew] 检查失败: 未在输出中找到 JSON 内容.");
-        println!("[brew] 原始输出:");
-        print!("{output}");
-        return;
-    };
-
-    let Ok(root) = serde_json::from_str::<Value>(json_text) else {
-        state.brew_check_failed = true;
-        println!("[brew] 检查失败: 解析 brew JSON 输出失败.");
-        println!("[brew] 原始输出:");
-        print!("{output}");
-        return;
-    };
-
-    state.brew_formula_list = root
-        .get("formulae")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flat_map(|arr| arr.iter())
-        .filter_map(|item| item.get("name").and_then(Value::as_str))
-        .map(ToOwned::to_owned)
-        .collect();
-
-    state.brew_cask_list = root
-        .get("casks")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flat_map(|arr| arr.iter())
-        .filter_map(|item| item.get("name").and_then(Value::as_str))
-        .map(ToOwned::to_owned)
-        .collect();
-
-    if !state.brew_formula_list.is_empty() {
-        state.brew_has_updates = true;
-        println!("[brew] Formula 可升级:");
-        for pkg in &state.brew_formula_list {
-            println!("  - {pkg}");
-        }
-    } else {
-        log_pkg("brew", "Formula: 已是最新.", MsgKind::Ok);
-    }
-
-    if !state.brew_cask_list.is_empty() {
-        state.brew_has_updates = true;
-        println!("[brew] Cask 可升级:");
-        for pkg in &state.brew_cask_list {
-            println!("  - {pkg}");
-        }
-    } else {
-        log_pkg("brew", "Cask: 已是最新.", MsgKind::Ok);
-    }
-}
-
-#[allow(dead_code)]
-fn check_npm(state: &mut AppState, show_section: bool) {
-    if show_section {
-        print_section("npm (global)");
-    }
-    if !state.enable_npm {
-        println!("[npm] 按系统策略跳过.");
-        return;
-    }
-    if !command_exists("npm") {
-        println!("[npm] 未安装, 跳过.");
-        return;
-    }
-
-    state.npm_installed = true;
-    log_pkg(
-        "npm",
-        "正在检查全局包更新 (npm outdated --json --global)...",
-        MsgKind::Info,
-    );
-    let Ok((status, output)) = run_capture("npm", &["outdated", "--json", "--global"]) else {
-        state.npm_check_failed = true;
-        println!("[npm] 检查失败: 无法执行 npm 命令.");
-        return;
-    };
-
-    if status == 0 {
-        log_pkg("npm", "全局包已是最新.", MsgKind::Ok);
-        return;
-    }
-
-    if status == 1 {
-        let Some(json_text) = first_json_payload(&output) else {
-            state.npm_check_failed = true;
-            println!("[npm] 检查失败: npm JSON 解析失败.");
-            print!("{output}");
-            return;
-        };
-        let Ok(root) = serde_json::from_str::<Value>(json_text) else {
-            state.npm_check_failed = true;
-            println!("[npm] 检查失败: npm JSON 解析失败.");
-            print!("{output}");
-            return;
-        };
-        let Some(obj) = root.as_object() else {
-            log_pkg("npm", "全局包已是最新.", MsgKind::Ok);
-            return;
-        };
-        if obj.is_empty() {
-            log_pkg("npm", "全局包已是最新.", MsgKind::Ok);
-            return;
-        }
-        state.npm_has_updates = true;
-        println!("[npm] 以下全局包可升级:");
-        for name in obj.keys() {
-            println!("  - {name}");
-        }
-        return;
-    }
-
-    state.npm_check_failed = true;
-    println!("[npm] 检查失败 (exit {status}):");
-    print!("{output}");
-}
-
 fn parse_cargo_list(output: &str) -> Result<Vec<String>, ()> {
     let mut pkgs = Vec::new();
     for raw in output.lines() {
@@ -941,299 +825,26 @@ fn parse_cargo_list(output: &str) -> Result<Vec<String>, ()> {
     Ok(pkgs)
 }
 
-#[allow(dead_code)]
-fn check_cargo(state: &mut AppState, show_section: bool) {
-    if show_section {
-        print_section("cargo");
-    }
-    if !state.enable_cargo {
-        println!("[cargo] 按系统策略跳过.");
-        return;
-    }
-    if !command_exists("cargo") {
-        println!("[cargo] 未安装, 跳过.");
-        return;
-    }
-
-    state.cargo_installed = true;
-    if !command_exists("cargo-install-update") {
-        println!("[cargo] 未安装 cargo-install-update, 无法检查已安装 crate 更新.");
-        println!("[cargo] 可先执行: cargo install cargo-update");
-        return;
-    }
-    let updater_exists = run_cargo_install_update_capture(&["--help"])
-        .map(|(code, _)| code == 0)
-        .unwrap_or(false);
-    if !updater_exists {
-        println!("[cargo] 未安装 cargo-install-update, 无法检查已安装 crate 更新.");
-        println!("[cargo] 可先执行: cargo install cargo-update");
-        return;
-    }
-    state.cargo_updater_installed = true;
-    log_pkg(
-        "cargo",
-        "正在检查已安装 crate 更新 (cargo install-update --list)...",
-        MsgKind::Info,
-    );
-
-    let Ok((status, output)) = run_cargo_install_update_capture(&["--list"]) else {
-        state.cargo_check_failed = true;
-        println!("[cargo] 检查失败: 无法执行 cargo install-update 命令.");
-        return;
-    };
-
-    if status != 0 {
-        state.cargo_check_failed = true;
-        println!("[cargo] 检查失败 (exit {status}):");
-        print!("{output}");
-        return;
-    }
-
-    let Ok(pkgs) = parse_cargo_list(&output) else {
-        state.cargo_check_failed = true;
-        println!("[cargo] 检查失败: 无法按表格格式解析 cargo install-update --list 输出.");
-        println!("[cargo] 原始输出如下:");
-        print!("{output}");
-        return;
-    };
-    state.cargo_updatable_packages = pkgs;
-    if !state.cargo_updatable_packages.is_empty() {
-        state.cargo_has_updates = true;
-        println!("[cargo] 以下 crate 可升级:");
-        for pkg in &state.cargo_updatable_packages {
-            println!("  - {pkg}");
-        }
-    } else {
-        log_pkg("cargo", "已安装 crate 已是最新.", MsgKind::Ok);
-    }
-}
-
-#[allow(dead_code)]
-fn check_rustup(state: &mut AppState, show_section: bool) {
-    if show_section {
-        print_section("rustup");
-    }
-    if !state.enable_rustup {
-        println!("[rustup] 按系统策略跳过.");
-        return;
-    }
-    if !command_exists("rustup") {
-        println!("[rustup] 未安装, 跳过.");
-        return;
-    }
-
-    state.rustup_installed = true;
-    log_pkg(
-        "rustup",
-        "正在检查 toolchain 更新 (rustup check --no-self-update)...",
-        MsgKind::Info,
-    );
-    let Ok((status, output)) = run_capture("rustup", &["check", "--no-self-update"]) else {
-        state.rustup_check_failed = true;
-        println!("[rustup] 检查失败: 无法执行 rustup 命令.");
-        return;
-    };
-    match status {
-        0 => log_pkg("rustup", "toolchain 已是最新.", MsgKind::Ok),
-        100 => {
-            state.rustup_has_updates = true;
-            println!("[rustup] 以下 toolchain 可升级:");
-            for line in output
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-            {
-                println!("  - {line}");
-            }
-        }
-        _ => {
-            state.rustup_check_failed = true;
-            println!("[rustup] 检查失败 (exit {status}):");
-            print!("{output}");
-        }
-    }
-}
-
-#[allow(dead_code)]
-fn check_paru(state: &mut AppState, show_section: bool) {
-    if show_section {
-        print_section("paru (AUR)");
-    }
-    if !state.enable_paru {
-        log_pkg("paru", "按系统策略跳过.", MsgKind::Warn);
-        return;
-    }
-    if !command_exists("paru") {
-        println!("[paru] 未安装, 跳过.");
-        return;
-    }
-
-    state.paru_installed = true;
-    if !state.is_arch_linux {
-        println!("[paru] 检测到非 Arch Linux 环境, 将按可用命令尝试检查.");
-    }
-
-    println!("[paru] 正在检查 AUR 可升级项 (paru -Qua)...");
-    let Ok((status, output)) = run_capture("paru", &["-Qua"]) else {
-        state.paru_check_failed = true;
-        println!("[paru] 检查失败: 无法执行 paru 命令.");
-        return;
-    };
-
-    if status != 0 {
-        state.paru_check_failed = true;
-        println!("[paru] 检查失败 (exit {status}):");
-        print!("{output}");
-        return;
-    }
-
-    for line in output
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-    {
-        if let Some(name) = first_token(line) {
-            state.paru_updatable_packages.push(name);
-        }
-    }
-    if !state.paru_updatable_packages.is_empty() {
-        state.paru_has_updates = true;
-        println!("[paru] 以下 AUR 包可升级:");
-        for pkg in &state.paru_updatable_packages {
-            println!("  - {pkg}");
-        }
-    } else {
-        println!("[paru] AUR 包已是最新.");
-    }
-}
-
-#[allow(dead_code)]
-fn check_flatpak(state: &mut AppState, show_section: bool) {
-    if show_section {
-        print_section("flatpak");
-    }
-    if !state.enable_flatpak {
-        log_pkg("flatpak", "按系统策略跳过.", MsgKind::Warn);
-        return;
-    }
-    if !command_exists("flatpak") {
-        println!("[flatpak] 未安装, 跳过.");
-        return;
-    }
-
-    state.flatpak_installed = true;
-    println!("[flatpak] 正在检查可升级项 (flatpak remote-ls --updates --columns=application)...");
-    let Ok((status, output)) = run_capture(
-        "flatpak",
-        &["remote-ls", "--updates", "--columns=application"],
-    ) else {
-        state.flatpak_check_failed = true;
-        println!("[flatpak] 检查失败: 无法执行 flatpak 命令.");
-        return;
-    };
-
-    if status != 0 {
-        state.flatpak_check_failed = true;
-        println!("[flatpak] 检查失败 (exit {status}):");
-        print!("{output}");
-        return;
-    }
-
-    state.flatpak_updatable_refs = output
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(ToOwned::to_owned)
-        .collect();
-
-    if !state.flatpak_updatable_refs.is_empty() {
-        state.flatpak_has_updates = true;
-        println!("[flatpak] 以下应用可升级:");
-        for app in &state.flatpak_updatable_refs {
-            println!("  - {app}");
-        }
-    } else {
-        println!("[flatpak] 已是最新.");
-    }
-}
-
-#[allow(dead_code)]
-fn check_pacman(state: &mut AppState, show_section: bool) {
-    if show_section {
-        print_section("pacman");
-    }
-    if !state.enable_pacman {
-        log_pkg("pacman", "按系统策略跳过.", MsgKind::Warn);
-        return;
-    }
-    if !command_exists("pacman") {
-        println!("[pacman] 未安装, 跳过.");
-        return;
-    }
-
-    state.pacman_installed = true;
-    if !state.is_arch_linux {
-        println!("[pacman] 检测到非 Arch Linux 环境, 将按可用命令尝试检查.");
-    }
-
-    let (status, output) = if command_exists("checkupdates") {
-        println!("[pacman] 正在检查可升级项 (checkupdates)...");
-        match run_capture("checkupdates", &[]) {
-            Ok(v) => v,
-            Err(_) => {
-                state.pacman_check_failed = true;
-                println!("[pacman] 检查失败: 无法执行 checkupdates 命令.");
-                return;
-            }
-        }
-    } else {
-        println!("[pacman] 未安装 checkupdates, 回退到 pacman -Qu.");
-        match run_capture("pacman", &["-Qu"]) {
-            Ok(v) => v,
-            Err(_) => {
-                state.pacman_check_failed = true;
-                println!("[pacman] 检查失败: 无法执行 pacman 命令.");
-                return;
-            }
-        }
-    };
-
-    if status != 0 {
-        if status == 2 {
-            println!("[pacman] 已是最新.");
-        } else {
-            state.pacman_check_failed = true;
-            println!("[pacman] 检查失败 (exit {status}):");
-            print!("{output}");
-        }
-        return;
-    }
-
-    for line in output
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-    {
-        if let Some(name) = first_token(line) {
-            state.pacman_updatable_packages.push(name);
-        }
-    }
-
-    if !state.pacman_updatable_packages.is_empty() {
-        state.pacman_has_updates = true;
-        println!("[pacman] 以下包可升级:");
-        for pkg in &state.pacman_updatable_packages {
-            println!("  - {pkg}");
-        }
-    } else {
-        println!("[pacman] 已是最新.");
-    }
-}
-
 struct CheckResult {
     target: String,
     state: AppState,
     logs: Vec<String>,
+}
+
+struct CheckRow {
+    target: String,
+    text: String,
+    kind: MsgKind,
+    done: bool,
+}
+
+enum CheckEvent {
+    Started(String),
+    Finished {
+        target: String,
+        kind: MsgKind,
+        summary: &'static str,
+    },
 }
 
 fn check_brew_quiet(state: &mut AppState, logs: &mut Vec<String>) {
@@ -1387,8 +998,9 @@ fn check_npm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     }
     state.npm_has_updates = true;
+    state.npm_updatable_packages = obj.keys().cloned().collect();
     logs.push(log_pkg_line("npm", "以下全局包可升级:", MsgKind::Info));
-    for name in obj.keys() {
+    for name in &state.npm_updatable_packages {
         logs.push(format!("  - {name}"));
     }
 }
@@ -1490,6 +1102,7 @@ fn check_rustup_quiet(state: &mut AppState, logs: &mut Vec<String>) {
                 MsgKind::Info,
             ));
             for line in output.lines().map(str::trim).filter(|x| !x.is_empty()) {
+                state.rustup_updatable_toolchains.push(line.to_string());
                 logs.push(format!("  - {line}"));
             }
         }
@@ -1749,6 +1362,7 @@ fn merge_check_result(state: &mut AppState, target: &str, local: AppState) {
             state.npm_installed = local.npm_installed;
             state.npm_has_updates = local.npm_has_updates;
             state.npm_check_failed = local.npm_check_failed;
+            state.npm_updatable_packages = local.npm_updatable_packages;
         }
         "cargo" => {
             state.cargo_installed = local.cargo_installed;
@@ -1761,6 +1375,7 @@ fn merge_check_result(state: &mut AppState, target: &str, local: AppState) {
             state.rustup_installed = local.rustup_installed;
             state.rustup_has_updates = local.rustup_has_updates;
             state.rustup_check_failed = local.rustup_check_failed;
+            state.rustup_updatable_toolchains = local.rustup_updatable_toolchains;
         }
         "paru" => {
             state.paru_installed = local.paru_installed;
@@ -1790,8 +1405,8 @@ fn merge_check_result(state: &mut AppState, target: &str, local: AppState) {
     }
 }
 
-fn run_checks(state: &mut AppState, requested: &[String]) {
-    let targets: Vec<String> = if requested.is_empty() {
+fn resolve_check_targets(state: &AppState, requested: &[String]) -> Vec<String> {
+    if requested.is_empty() {
         TARGET_IDS
             .iter()
             .filter(|target| target_enabled(state, target))
@@ -1805,8 +1420,51 @@ fn run_checks(state: &mut AppState, requested: &[String]) {
             }
         }
         uniq
-    };
+    }
+}
 
+fn spawn_check_workers(
+    targets: &[String],
+) -> (
+    Vec<thread::JoinHandle<CheckResult>>,
+    mpsc::Receiver<CheckEvent>,
+) {
+    let mut handles = Vec::new();
+    let (tx, rx) = mpsc::channel::<CheckEvent>();
+    for target in targets {
+        let t = target.clone();
+        let tx_thread = tx.clone();
+        handles.push(thread::spawn(move || {
+            let _ = tx_thread.send(CheckEvent::Started(t.clone()));
+            let result = run_single_check(&t);
+            let (kind, summary) = summarize_target_status(&t, &result.state);
+            let _ = tx_thread.send(CheckEvent::Finished {
+                target: t,
+                kind,
+                summary,
+            });
+            result
+        }));
+    }
+    drop(tx);
+    (handles, rx)
+}
+
+fn finish_check_workers(
+    state: &mut AppState,
+    handles: Vec<thread::JoinHandle<CheckResult>>,
+) -> HashMap<String, Vec<String>> {
+    let mut logs_map: HashMap<String, Vec<String>> = HashMap::new();
+    for h in handles {
+        if let Ok(result) = h.join() {
+            merge_check_result(state, &result.target, result.state);
+            logs_map.insert(result.target, result.logs);
+        }
+    }
+    logs_map
+}
+
+fn run_checks_plain(state: &mut AppState, targets: &[String]) {
     let mut handles = Vec::new();
     let (tx, rx) = mpsc::channel::<String>();
     println!(
@@ -1818,7 +1476,7 @@ fn run_checks(state: &mut AppState, requested: &[String]) {
             .collect::<Vec<_>>()
             .join(", ")
     );
-    for target in &targets {
+    for target in targets {
         let t = target.clone();
         let tx_thread = tx.clone();
         handles.push(thread::spawn(move || {
@@ -1835,21 +1493,119 @@ fn run_checks(state: &mut AppState, requested: &[String]) {
         println!("{line}");
     }
 
-    let mut logs_map: HashMap<String, Vec<String>> = HashMap::new();
-    for h in handles {
-        if let Ok(result) = h.join() {
-            merge_check_result(state, &result.target, result.state);
-            logs_map.insert(result.target, result.logs);
-        }
-    }
+    let logs_map = finish_check_workers(state, handles);
 
-    for target in &targets {
+    for target in targets {
         print_section(section_title(target));
         if let Some(lines) = logs_map.get(target) {
             for line in lines {
                 println!("{line}");
             }
         }
+    }
+}
+
+fn run_checks_tui(state: &mut AppState, targets: &[String], start_time: &str) -> io::Result<()> {
+    let _guard = TerminalGuard::enter()?;
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend)?;
+    let mut rows: Vec<CheckRow> = targets
+        .iter()
+        .map(|target| CheckRow {
+            target: target.clone(),
+            text: "等待检查".to_string(),
+            kind: MsgKind::Info,
+            done: false,
+        })
+        .collect();
+    let mut done_count = 0usize;
+    let (handles, rx) = spawn_check_workers(targets);
+
+    loop {
+        loop {
+            match rx.try_recv() {
+                Ok(CheckEvent::Started(target)) => {
+                    if let Some(row) = rows.iter_mut().find(|row| row.target == target) {
+                        row.text = "检查中".to_string();
+                        row.kind = MsgKind::Info;
+                    }
+                }
+                Ok(CheckEvent::Finished {
+                    target,
+                    kind,
+                    summary,
+                }) => {
+                    if let Some(row) = rows.iter_mut().find(|row| row.target == target) {
+                        row.text = summary.to_string();
+                        row.kind = kind;
+                        if !row.done {
+                            row.done = true;
+                            done_count += 1;
+                        }
+                    }
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    for row in rows.iter_mut().filter(|row| !row.done) {
+                        row.text = "检查失败".to_string();
+                        row.kind = MsgKind::Warn;
+                        row.done = true;
+                        done_count += 1;
+                    }
+                    break;
+                }
+            }
+        }
+
+        terminal.draw(|frame| {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(5), Constraint::Min(1)])
+                .split(frame.area());
+            let header = Paragraph::new(format!(
+                "开始时间: {start_time}\n系统策略: {}\n进度: {done_count}/{}",
+                profile_name(state.system_profile),
+                rows.len()
+            ))
+            .block(Block::default().title("检查可升级项").borders(Borders::ALL));
+            frame.render_widget(header, chunks[0]);
+
+            let items: Vec<ListItem> = rows
+                .iter()
+                .map(|row| {
+                    let style = match row.kind {
+                        MsgKind::Info => Style::default().fg(Color::Cyan),
+                        MsgKind::Ok => Style::default().fg(Color::Green),
+                        MsgKind::Warn => Style::default().fg(Color::Yellow),
+                    };
+                    ListItem::new(format!("{:<10} {}", target_label(&row.target), row.text))
+                        .style(style)
+                })
+                .collect();
+            let list = List::new(items).block(Block::default().title("目标").borders(Borders::ALL));
+            frame.render_widget(list, chunks[1]);
+        })?;
+
+        if done_count >= rows.len() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(80));
+    }
+
+    let _ = finish_check_workers(state, handles);
+    thread::sleep(Duration::from_millis(500));
+    Ok(())
+}
+
+fn run_checks(state: &mut AppState, requested: &[String], start_time: &str) {
+    let targets = resolve_check_targets(state, requested);
+    if interactive_terminal() {
+        if let Err(err) = run_checks_tui(state, &targets, start_time) {
+            eprintln!("[ui] TUI 初始化失败, 自动回退文本输出: {err}");
+            run_checks_plain(state, &targets);
+        }
+    } else {
+        run_checks_plain(state, &targets);
     }
 }
 
@@ -2035,6 +1791,10 @@ fn any_check_failed(state: &AppState) -> bool {
         || state.pkg_check_failed
 }
 
+fn interactive_terminal() -> bool {
+    io::stdout().is_terminal() && io::stdin().is_terminal()
+}
+
 fn main() {
     let cli = parse_cli();
 
@@ -2053,25 +1813,28 @@ fn main() {
 
     let mut state = AppState::default();
     parse_profile(&mut state);
+    let start_time = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    print_section("检查可升级项");
-    println!(
-        "{}: {}",
-        color_bold("开始时间", TermColor::Blue),
-        Local::now().format("%Y-%m-%d %H:%M:%S")
-    );
-    println!(
-        "{}: {}",
-        color_bold("系统策略", TermColor::Blue),
-        profile_name(state.system_profile)
-    );
+    if !interactive_terminal() {
+        print_section("检查可升级项");
+        println!(
+            "{}: {}",
+            color_bold("开始时间", TermColor::Blue),
+            start_time
+        );
+        println!(
+            "{}: {}",
+            color_bold("系统策略", TermColor::Blue),
+            profile_name(state.system_profile)
+        );
+    }
 
     let requested_updates = match &cli {
         CliCommand::Update(v) => v.clone(),
         _ => Vec::new(),
     };
 
-    run_checks(&mut state, &requested_updates);
+    run_checks(&mut state, &requested_updates, &start_time);
 
     let upgradable_targets = build_upgradable_targets(&state);
 
@@ -2085,9 +1848,11 @@ fn main() {
         process::exit(0);
     }
 
-    print_section("选择要升级的项目");
+    if !interactive_terminal() {
+        print_section("选择要升级的项目");
+    }
     let selected_targets = if requested_updates.is_empty() {
-        select_targets(&upgradable_targets)
+        select_targets(&state, &upgradable_targets)
     } else {
         resolve_cli_selection(&requested_updates, &upgradable_targets)
     };
