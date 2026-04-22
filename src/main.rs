@@ -1860,13 +1860,32 @@ fn wait_tui_message(terminal: &mut AppTerminal, title: &str, lines: &[String]) -
     }
 }
 
-fn draw_tui_message(terminal: &mut AppTerminal, title: &str, lines: &[String]) -> io::Result<()> {
-    terminal.draw(|frame| {
-        let block = Paragraph::new(lines.join("\n"))
-            .block(Block::default().title(title).borders(Borders::ALL));
-        frame.render_widget(block, frame.area());
-    })?;
-    Ok(())
+fn run_inherit_outside_tui(
+    terminal: &mut AppTerminal,
+    program: &str,
+    args: &[&str],
+) -> io::Result<bool> {
+    disable_raw_mode()?;
+    execute!(io::stdout(), LeaveAlternateScreen)?;
+    let command_result = run_inherit(program, args);
+
+    let mut restore_error = None;
+    if let Err(err) = enable_raw_mode() {
+        restore_error = Some(err);
+    }
+    if let Err(err) = execute!(io::stdout(), EnterAlternateScreen)
+        && restore_error.is_none()
+    {
+        restore_error = Some(err);
+    }
+    if restore_error.is_none() {
+        let _ = terminal.clear();
+    }
+
+    if let Some(err) = restore_error {
+        return Err(err);
+    }
+    command_result
 }
 
 fn offer_install_cargo_update_tui(
@@ -1884,22 +1903,16 @@ fn offer_install_cargo_update_tui(
             "未安装 cargo-install-update, 无法检查已安装 crate 更新.".to_string(),
             "是否执行 cargo install cargo-update? 默认: Yes".to_string(),
             "".to_string(),
-            "Enter/Y: 安装    N/q/Esc: 跳过".to_string(),
+            "Enter/Y: 直连终端执行    N/q/Esc: 跳过".to_string(),
         ],
     )?;
     if !install {
         return Ok(());
     }
 
-    draw_tui_message(
-        terminal,
-        "cargo-update",
-        &["正在执行: cargo install cargo-update".to_string()],
-    )?;
-
-    let install_result = run_capture("cargo", &["install", "cargo-update"]);
+    let install_result = run_inherit_outside_tui(terminal, "cargo", &["install", "cargo-update"]);
     match install_result {
-        Ok((0, _)) => {
+        Ok(true) => {
             state.cargo_has_updates = false;
             state.cargo_check_failed = false;
             state.cargo_updater_installed = false;
@@ -1916,25 +1929,23 @@ fn offer_install_cargo_update_tui(
             lines.push("Enter: 继续    q/Esc: 继续".to_string());
             let _ = wait_tui_message(terminal, "cargo-update", &lines)?;
         }
-        Ok((status, output)) => {
+        Ok(false) => {
             state.cargo_check_failed = true;
-            let mut lines = vec![format!("cargo-update 安装失败 (exit {status}).")];
-            lines.extend(output.lines().map(ToOwned::to_owned).take(12));
-            lines.push("".to_string());
-            lines.push("Enter: 继续    q/Esc: 继续".to_string());
+            let lines = vec![
+                "cargo-update 安装失败 (退出码非 0).".to_string(),
+                "".to_string(),
+                "Enter: 继续    q/Esc: 继续".to_string(),
+            ];
             let _ = wait_tui_message(terminal, "cargo-update", &lines)?;
         }
         Err(err) => {
             state.cargo_check_failed = true;
-            let _ = wait_tui_message(
-                terminal,
-                "cargo-update",
-                &[
-                    format!("cargo-update 安装失败: {err}"),
-                    "".to_string(),
-                    "Enter: 继续    q/Esc: 继续".to_string(),
-                ],
-            )?;
+            let lines = vec![
+                format!("cargo-update 安装失败: {err}"),
+                "".to_string(),
+                "Enter: 继续    q/Esc: 继续".to_string(),
+            ];
+            let _ = wait_tui_message(terminal, "cargo-update", &lines)?;
         }
     }
     Ok(())
