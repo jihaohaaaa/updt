@@ -16,11 +16,15 @@ It mirrors the behavior of the original script, but the workflow is implemented 
 - pacman packages (Arch Linux)
 - pkg packages (Termux)
 
+Windows is supported for language/toolchain managers only: npm, cargo, and rustup.
+Windows system package managers are intentionally unsupported: `winget`, `choco`, and `scoop` are not checked or upgraded by `updt`.
+
 ## System policy
 
 `updt` enables targets by OS profile.
 
 - macOS: Homebrew, npm, cargo, rustup
+- Windows: npm, cargo, rustup
 - Arch Linux: npm, cargo, rustup, paru, pacman, flatpak
 - Termux: pkg, npm, cargo
 - other systems: all targets disabled by policy

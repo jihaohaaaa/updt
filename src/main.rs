@@ -34,6 +34,7 @@ const TARGET_IDS: [&str; 8] = [
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SystemProfile {
     Unknown,
+    Windows,
     Macos,
     Arch,
     Termux,
@@ -370,19 +371,73 @@ fn summarize_target_status(target: &str, state: &AppState) -> (MsgKind, &'static
 }
 
 fn command_exists(name: &str) -> bool {
-    if name.contains('/') {
-        return is_executable(Path::new(name));
+    resolve_command_path(name).is_some()
+}
+
+fn resolve_command_path(name: &str) -> Option<PathBuf> {
+    if name.contains('/') || name.contains('\\') {
+        let path = Path::new(name);
+        return is_executable(path).then(|| path.to_path_buf());
     }
-    let Some(path_env) = env::var_os("PATH") else {
-        return false;
-    };
-    for dir in env::split_paths(&path_env) {
-        let candidate = dir.join(name);
-        if is_executable(&candidate) {
-            return true;
+
+    let candidates = command_name_candidates(name);
+    for dir in env::split_paths(&env::var_os("PATH")?) {
+        for candidate_name in &candidates {
+            let candidate = dir.join(candidate_name);
+            if is_executable(&candidate) {
+                return Some(candidate);
+            }
         }
     }
-    false
+    None
+}
+
+#[cfg(windows)]
+fn command_name_candidates(name: &str) -> Vec<String> {
+    let path = Path::new(name);
+    if path.extension().is_some() {
+        return vec![name.to_string()];
+    }
+
+    let pathext = env::var_os("PATHEXT")
+        .and_then(|value| value.into_string().ok())
+        .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string());
+    let mut candidates = Vec::new();
+    for ext in pathext
+        .split(';')
+        .map(str::trim)
+        .filter(|ext| !ext.is_empty())
+    {
+        candidates.push(format!("{name}{ext}"));
+    }
+    candidates.push(name.to_string());
+    candidates
+}
+
+#[cfg(not(windows))]
+fn command_name_candidates(name: &str) -> Vec<String> {
+    vec![name.to_string()]
+}
+
+fn command_program(program: &str) -> PathBuf {
+    resolve_command_path(program).unwrap_or_else(|| PathBuf::from(program))
+}
+
+fn command(program: &str) -> Command {
+    let program_path = command_program(program);
+    #[cfg(windows)]
+    {
+        if program_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"))
+        {
+            let mut cmd = Command::new("cmd.exe");
+            cmd.arg("/D").arg("/C").arg("call").arg(program_path);
+            return cmd;
+        }
+    }
+    Command::new(program_path)
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -403,7 +458,7 @@ fn is_executable(path: &Path) -> bool {
 }
 
 fn run_capture(program: &str, args: &[&str]) -> io::Result<(i32, String)> {
-    let output = Command::new(program).args(args).output()?;
+    let output = command(program).args(args).output()?;
     let code = output.status.code().unwrap_or(-1);
     let mut text = String::new();
     text.push_str(&String::from_utf8_lossy(&output.stdout));
@@ -412,7 +467,7 @@ fn run_capture(program: &str, args: &[&str]) -> io::Result<(i32, String)> {
 }
 
 fn run_inherit(program: &str, args: &[&str]) -> io::Result<bool> {
-    let status = Command::new(program)
+    let status = command(program)
         .args(args)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
@@ -658,6 +713,11 @@ fn parse_profile(state: &mut AppState) {
         state.enable_npm = true;
         state.enable_cargo = true;
         state.enable_rustup = false;
+    } else if env::consts::OS == "windows" {
+        state.system_profile = SystemProfile::Windows;
+        state.enable_npm = true;
+        state.enable_cargo = true;
+        state.enable_rustup = true;
     } else if env::consts::OS == "macos" {
         state.system_profile = SystemProfile::Macos;
         state.enable_brew = true;
@@ -678,9 +738,24 @@ fn parse_profile(state: &mut AppState) {
 fn profile_name(profile: SystemProfile) -> &'static str {
     match profile {
         SystemProfile::Unknown => "unknown",
+        SystemProfile::Windows => "windows",
         SystemProfile::Macos => "macos",
         SystemProfile::Arch => "arch",
         SystemProfile::Termux => "termux",
+    }
+}
+
+fn target_enabled(state: &AppState, target: &str) -> bool {
+    match target {
+        "brew" => state.enable_brew,
+        "npm" => state.enable_npm,
+        "cargo" => state.enable_cargo,
+        "rustup" => state.enable_rustup,
+        "paru" => state.enable_paru,
+        "flatpak" => state.enable_flatpak,
+        "pacman" => state.enable_pacman,
+        "pkg" => state.enable_pkg,
+        _ => false,
     }
 }
 
@@ -1717,7 +1792,11 @@ fn merge_check_result(state: &mut AppState, target: &str, local: AppState) {
 
 fn run_checks(state: &mut AppState, requested: &[String]) {
     let targets: Vec<String> = if requested.is_empty() {
-        TARGET_IDS.iter().map(|x| x.to_string()).collect()
+        TARGET_IDS
+            .iter()
+            .filter(|target| target_enabled(state, target))
+            .map(|x| x.to_string())
+            .collect()
     } else {
         let mut uniq = Vec::new();
         for t in requested {
