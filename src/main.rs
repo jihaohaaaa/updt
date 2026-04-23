@@ -30,8 +30,8 @@ use std::time::Duration;
 
 type AppTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 
-const TARGET_IDS: [&str; 9] = [
-    "brew", "npm", "cargo", "nvim", "rustup", "paru", "flatpak", "pacman", "pkg",
+const TARGET_IDS: [&str; 10] = [
+    "brew", "npm", "cargo", "nvim", "rustup", "scoop", "paru", "flatpak", "pacman", "pkg",
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -68,6 +68,10 @@ struct AppState {
     rustup_has_updates: bool,
     rustup_check_failed: bool,
     rustup_updatable_toolchains: Vec<String>,
+    scoop_installed: bool,
+    scoop_has_updates: bool,
+    scoop_check_failed: bool,
+    scoop_updatable_packages: Vec<String>,
     paru_installed: bool,
     paru_has_updates: bool,
     paru_check_failed: bool,
@@ -97,6 +101,7 @@ struct AppState {
     enable_npm: bool,
     enable_cargo: bool,
     enable_rustup: bool,
+    enable_scoop: bool,
     enable_paru: bool,
     enable_pacman: bool,
     enable_flatpak: bool,
@@ -125,6 +130,10 @@ impl Default for AppState {
             rustup_has_updates: false,
             rustup_check_failed: false,
             rustup_updatable_toolchains: vec![],
+            scoop_installed: false,
+            scoop_has_updates: false,
+            scoop_check_failed: false,
+            scoop_updatable_packages: vec![],
             paru_installed: false,
             paru_has_updates: false,
             paru_check_failed: false,
@@ -154,6 +163,7 @@ impl Default for AppState {
             enable_npm: false,
             enable_cargo: false,
             enable_rustup: false,
+            enable_scoop: false,
             enable_paru: false,
             enable_pacman: false,
             enable_flatpak: false,
@@ -170,6 +180,7 @@ fn target_label(id: &str) -> &'static str {
         "cargo" => "cargo",
         "nvim" => "Neovim",
         "rustup" => "rustup",
+        "scoop" => "scoop",
         "paru" => "paru",
         "flatpak" => "flatpak",
         "pacman" => "pacman",
@@ -280,6 +291,7 @@ fn section_title(target: &str) -> &'static str {
         "cargo" => "cargo",
         "nvim" => "Neovim (Lazy/Mason)",
         "rustup" => "rustup",
+        "scoop" => "scoop",
         "paru" => "paru (AUR)",
         "flatpak" => "flatpak",
         "pacman" => "pacman",
@@ -342,6 +354,17 @@ fn summarize_target_status(target: &str, state: &AppState) -> (MsgKind, &'static
             } else if state.rustup_check_failed {
                 (MsgKind::Warn, "检查失败")
             } else if state.rustup_has_updates {
+                (MsgKind::Warn, "发现可升级项")
+            } else {
+                (MsgKind::Ok, "当前最新")
+            }
+        }
+        "scoop" => {
+            if !state.enable_scoop || !state.scoop_installed {
+                (MsgKind::Warn, "已跳过")
+            } else if state.scoop_check_failed {
+                (MsgKind::Warn, "检查失败")
+            } else if state.scoop_has_updates {
                 (MsgKind::Warn, "发现可升级项")
             } else {
                 (MsgKind::Ok, "当前最新")
@@ -577,6 +600,7 @@ fn updatable_items_for_target(state: &AppState, target: &str) -> Vec<String> {
         "cargo" => state.cargo_updatable_packages.clone(),
         "nvim" => state.nvim_updatable_components.clone(),
         "rustup" => state.rustup_updatable_toolchains.clone(),
+        "scoop" => state.scoop_updatable_packages.clone(),
         "paru" => state.paru_updatable_packages.clone(),
         "flatpak" => state.flatpak_updatable_refs.clone(),
         "pacman" => state.pacman_updatable_packages.clone(),
@@ -624,7 +648,10 @@ fn select_targets_prompt(state: &AppState, upgradable_targets: &[String]) -> Vec
         let _ = io::stdout().flush();
         let mut answer = String::new();
         if io::stdin().read_line(&mut answer).is_ok()
-            && matches!(answer.trim().to_ascii_lowercase().as_str(), "" | "y" | "yes")
+            && matches!(
+                answer.trim().to_ascii_lowercase().as_str(),
+                "" | "y" | "yes"
+            )
         {
             selected_targets.push(target.clone());
         }
@@ -697,15 +724,17 @@ fn select_targets_tui_with_checks(
                             MsgKind::Ok => Style::default().fg(Color::Green),
                             MsgKind::Warn => Style::default().fg(Color::Yellow),
                         };
-                        ListItem::new(format!("{:<10} {}", target_label(target), summary)).style(style)
+                        ListItem::new(format!("{:<10} {}", target_label(target), summary))
+                            .style(style)
                     })
                     .collect();
-                let target_list =
-                    List::new(target_items).block(Block::default().title("目标").borders(Borders::ALL));
+                let target_list = List::new(target_items)
+                    .block(Block::default().title("目标").borders(Borders::ALL));
                 frame.render_widget(target_list, chunks[1]);
 
-                let help = Paragraph::new("Up/Down: move, Space: toggle, Enter: confirm, q/Esc: quit")
-                    .block(Block::default().title("updt").borders(Borders::ALL));
+                let help =
+                    Paragraph::new("Up/Down: move, Space: toggle, Enter: confirm, q/Esc: quit")
+                        .block(Block::default().title("updt").borders(Borders::ALL));
                 frame.render_widget(help, chunks[2]);
 
                 let items: Vec<ListItem> = upgradable_targets
@@ -748,8 +777,9 @@ fn select_targets_tui_with_checks(
                     .constraints([Constraint::Length(3), Constraint::Min(1)])
                     .split(frame.area());
 
-                let help = Paragraph::new("Up/Down: move, Space: toggle, Enter: confirm, q/Esc: quit")
-                    .block(Block::default().title("updt").borders(Borders::ALL));
+                let help =
+                    Paragraph::new("Up/Down: move, Space: toggle, Enter: confirm, q/Esc: quit")
+                        .block(Block::default().title("updt").borders(Borders::ALL));
                 frame.render_widget(help, chunks[0]);
 
                 let items: Vec<ListItem> = upgradable_targets
@@ -867,7 +897,7 @@ fn install_fish_completion() -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::other("invalid completion path"))?;
     fs::create_dir_all(parent)?;
 
-    let script = r#"set -l __updt_targets brew npm cargo nvim rustup paru flatpak pacman pkg
+    let script = r#"set -l __updt_targets brew npm cargo nvim rustup scoop paru flatpak pacman pkg
 
 complete -c updt -f
 complete -c updt -s h -l help -d 'Print help'
@@ -898,6 +928,7 @@ fn parse_profile(state: &mut AppState) {
         state.enable_npm = true;
         state.enable_cargo = true;
         state.enable_rustup = true;
+        state.enable_scoop = true;
     } else if env::consts::OS == "macos" {
         state.system_profile = SystemProfile::Macos;
         state.enable_brew = true;
@@ -932,6 +963,7 @@ fn target_enabled(state: &AppState, target: &str) -> bool {
         "cargo" => state.enable_cargo,
         "nvim" => state.enable_nvim,
         "rustup" => state.enable_rustup,
+        "scoop" => state.enable_scoop,
         "paru" => state.enable_paru,
         "flatpak" => state.enable_flatpak,
         "pacman" => state.enable_pacman,
@@ -1261,6 +1293,98 @@ fn check_rustup_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     }
 }
 
+fn check_scoop_quiet(state: &mut AppState, logs: &mut Vec<String>) {
+    if !state.enable_scoop {
+        logs.push(log_pkg_line("scoop", "按系统策略跳过.", MsgKind::Warn));
+        return;
+    }
+    if !command_exists("scoop") {
+        logs.push(log_pkg_line("scoop", "未安装, 跳过.", MsgKind::Warn));
+        return;
+    }
+    state.scoop_installed = true;
+    logs.push(log_pkg_line(
+        "scoop",
+        "正在检查可升级项 (scoop status)...",
+        MsgKind::Info,
+    ));
+
+    let shell = if command_exists("pwsh") {
+        "pwsh"
+    } else {
+        "powershell.exe"
+    };
+    let script = "$rows = scoop status | Where-Object { $_.PSObject.Properties.Name -contains 'Latest Version' -and $_.'Latest Version' -ne '' } | ForEach-Object { $_.Name }; $rows | ForEach-Object { $_ }";
+    let Ok((status, output)) = run_capture(
+        shell,
+        &[
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+        ],
+    ) else {
+        state.scoop_check_failed = true;
+        logs.push(log_pkg_line(
+            "scoop",
+            "检查失败: 无法执行 scoop status.",
+            MsgKind::Warn,
+        ));
+        return;
+    };
+
+    if status != 0 {
+        state.scoop_check_failed = true;
+        logs.push(log_pkg_line(
+            "scoop",
+            &format!("检查失败 (scoop status, exit {status})."),
+            MsgKind::Warn,
+        ));
+        return;
+    }
+
+    let mut metadata_outdated = false;
+    for raw in strip_ansi_control_sequences(&output).lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with("WARN") {
+            if line.contains("Scoop out of date") || line.contains("bucket(s) out of date") {
+                metadata_outdated = true;
+                logs.push(log_pkg_line("scoop", line, MsgKind::Warn));
+            }
+            continue;
+        }
+        if line == "Everything is ok!" || line == "Scoop is up to date." {
+            continue;
+        }
+        if let Some(name) = first_token(line) {
+            state.scoop_updatable_packages.push(name);
+        }
+    }
+
+    if state.scoop_updatable_packages.is_empty() {
+        if metadata_outdated {
+            state.scoop_has_updates = true;
+            logs.push(log_pkg_line(
+                "scoop",
+                "Scoop/桶元数据有更新, 可执行 upgrade 阶段刷新.",
+                MsgKind::Warn,
+            ));
+        } else {
+            logs.push(log_pkg_line("scoop", "已是最新.", MsgKind::Ok));
+        }
+    } else {
+        state.scoop_has_updates = true;
+        logs.push(log_pkg_line("scoop", "以下包可升级:", MsgKind::Info));
+        for p in &state.scoop_updatable_packages {
+            logs.push(format!("  - {p}"));
+        }
+    }
+}
+
 fn check_paru_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     if !state.enable_paru {
         logs.push(log_pkg_line("paru", "按系统策略跳过.", MsgKind::Warn));
@@ -1300,7 +1424,11 @@ fn check_paru_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         ));
         return;
     }
-    for line in trimmed_output.lines().map(str::trim).filter(|x| !x.is_empty()) {
+    for line in trimmed_output
+        .lines()
+        .map(str::trim)
+        .filter(|x| !x.is_empty())
+    {
         if let Some(name) = first_token(line) {
             state.paru_updatable_packages.push(name);
         }
@@ -1516,7 +1644,11 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         "+qa",
     ]) else {
         state.nvim_check_failed = true;
-        logs.push(log_pkg_line("nvim", "检查失败: 无法启动 nvim.", MsgKind::Warn));
+        logs.push(log_pkg_line(
+            "nvim",
+            "检查失败: 无法启动 nvim.",
+            MsgKind::Warn,
+        ));
         return;
     };
     if lazy_status != 0 {
@@ -1535,7 +1667,11 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         "+qa",
     ]) else {
         state.nvim_check_failed = true;
-        logs.push(log_pkg_line("nvim", "检查失败: Mason 探测命令失败.", MsgKind::Warn));
+        logs.push(log_pkg_line(
+            "nvim",
+            "检查失败: Mason 探测命令失败.",
+            MsgKind::Warn,
+        ));
         return;
     };
     if mason_status != 0 {
@@ -1637,7 +1773,11 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     }
 
     if state.nvim_updatable_components.is_empty() {
-        logs.push(log_pkg_line("nvim", "Neovim 插件与 Mason 已是最新.", MsgKind::Ok));
+        logs.push(log_pkg_line(
+            "nvim",
+            "Neovim 插件与 Mason 已是最新.",
+            MsgKind::Ok,
+        ));
         return;
     }
 
@@ -1658,6 +1798,7 @@ fn run_single_check(target: &str) -> CheckResult {
         "cargo" => check_cargo_quiet(&mut local, &mut logs),
         "nvim" => check_nvim_quiet(&mut local, &mut logs),
         "rustup" => check_rustup_quiet(&mut local, &mut logs),
+        "scoop" => check_scoop_quiet(&mut local, &mut logs),
         "paru" => check_paru_quiet(&mut local, &mut logs),
         "flatpak" => check_flatpak_quiet(&mut local, &mut logs),
         "pacman" => check_pacman_quiet(&mut local, &mut logs),
@@ -1706,6 +1847,12 @@ fn merge_check_result(state: &mut AppState, target: &str, local: AppState) {
             state.rustup_has_updates = local.rustup_has_updates;
             state.rustup_check_failed = local.rustup_check_failed;
             state.rustup_updatable_toolchains = local.rustup_updatable_toolchains;
+        }
+        "scoop" => {
+            state.scoop_installed = local.scoop_installed;
+            state.scoop_has_updates = local.scoop_has_updates;
+            state.scoop_check_failed = local.scoop_check_failed;
+            state.scoop_updatable_packages = local.scoop_updatable_packages;
         }
         "paru" => {
             state.paru_installed = local.paru_installed;
@@ -2007,7 +2154,10 @@ fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
             for pkg in &targets {
                 args.push(pkg.as_str());
             }
-            println!("[cargo] 正在执行: cargo install-update {}", targets.join(" "));
+            println!(
+                "[cargo] 正在执行: cargo install-update {}",
+                targets.join(" ")
+            );
             match run_cargo_install_update_inherit(&args) {
                 Ok(true) => println!("[cargo] 其他已安装 crate 升级完成."),
                 _ => {
@@ -2039,7 +2189,9 @@ fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
             }
 
             if state.nvim_mason_available {
-                println!("[nvim] 正在执行: nvim --headless \"+Lazy load mason.nvim\" \"+MasonUpdate\" +qa");
+                println!(
+                    "[nvim] 正在执行: nvim --headless \"+Lazy load mason.nvim\" \"+MasonUpdate\" +qa"
+                );
                 match run_nvim_headless_inherit(&["+Lazy load mason.nvim", "+MasonUpdate", "+qa"]) {
                     Ok(true) => println!("[nvim] Mason registry 更新完成."),
                     _ => {
@@ -2074,6 +2226,26 @@ fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
             Ok(true) => println!("[rustup] toolchain 升级完成."),
             _ => {
                 println!("[rustup] toolchain 升级失败.");
+                run_fail = true;
+            }
+        }
+    }
+
+    if selected.iter().any(|s| s == "scoop") {
+        println!("[scoop] 正在执行: scoop update");
+        match run_inherit("scoop", &["update"]) {
+            Ok(true) => {
+                println!("[scoop] 正在执行: scoop update *");
+                match run_inherit("scoop", &["update", "*"]) {
+                    Ok(true) => println!("[scoop] 包升级完成."),
+                    _ => {
+                        println!("[scoop] 包升级失败.");
+                        run_fail = true;
+                    }
+                }
+            }
+            _ => {
+                println!("[scoop] 升级失败: scoop update 失败.");
                 run_fail = true;
             }
         }
@@ -2135,7 +2307,9 @@ fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
     if cargo_self_needs_update {
         #[cfg(windows)]
         {
-            println!("[cargo] 即将单独升级 updt: 先退出当前 updt, 再执行 cargo install-update updt");
+            println!(
+                "[cargo] 即将单独升级 updt: 先退出当前 updt, 再执行 cargo install-update updt"
+            );
             match schedule_windows_self_update(self_pkg) {
                 Ok(()) => {
                     println!("[cargo] 已启动前台自更新窗口, 本次 updt 退出后会显示升级过程.");
@@ -2195,6 +2369,9 @@ fn build_upgradable_targets(state: &AppState) -> Vec<String> {
     if state.rustup_has_updates {
         upgradable_targets.push("rustup".to_string());
     }
+    if state.scoop_has_updates {
+        upgradable_targets.push("scoop".to_string());
+    }
     if state.paru_has_updates {
         upgradable_targets.push("paru".to_string());
     }
@@ -2231,6 +2408,7 @@ fn any_check_failed(state: &AppState) -> bool {
         || state.cargo_check_failed
         || state.nvim_check_failed
         || state.rustup_check_failed
+        || state.scoop_check_failed
         || state.paru_check_failed
         || state.flatpak_check_failed
         || state.pacman_check_failed
@@ -2350,7 +2528,11 @@ fn wait_tui_message_on_checks(
         terminal.draw(|frame| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(5), Constraint::Min(1), Constraint::Length(1)])
+                .constraints([
+                    Constraint::Length(5),
+                    Constraint::Min(1),
+                    Constraint::Length(1),
+                ])
                 .split(frame.area());
 
             let header = Paragraph::new(format!(
@@ -2473,8 +2655,11 @@ fn wait_tui_float_on_selection(
                     ListItem::new(format!("{mark} {}", target_label(item)))
                 })
                 .collect();
-            let list =
-                List::new(items).block(Block::default().title("选择要升级的项目").borders(Borders::ALL));
+            let list = List::new(items).block(
+                Block::default()
+                    .title("选择要升级的项目")
+                    .borders(Borders::ALL),
+            );
             frame.render_widget(list, chunks[3]);
 
             let popup_height = ((lines.len() as u16) + 2).clamp(3, area.height.saturating_sub(2));
@@ -2511,13 +2696,19 @@ fn wait_tui_float_on_selection(
 
             let (confirm_style, cancel_style) = if confirm_selected {
                 (
-                    Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
                     Style::default().fg(Color::Gray),
                 )
             } else {
                 (
                     Style::default().fg(Color::Gray),
-                    Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
                 )
             };
             let buttons = Line::from(vec![
@@ -2787,7 +2978,8 @@ fn run_interactive_flow(
         };
         lines.push("".to_string());
         lines.push("Enter/q/Esc: 退出".to_string());
-        let _ = wait_tui_message_on_checks(&mut terminal, state, &targets, start_time, "汇总", &lines)?;
+        let _ =
+            wait_tui_message_on_checks(&mut terminal, state, &targets, start_time, "汇总", &lines)?;
         return Ok(InteractiveResult::Exit(exit_code));
     }
 
