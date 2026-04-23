@@ -1637,6 +1637,8 @@ fn run_checks(state: &mut AppState, requested: &[String], start_time: &str) {
 fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
     print_section("执行升级");
     let mut run_fail = false;
+    let self_pkg = env!("CARGO_PKG_NAME");
+    let mut cargo_self_needs_update = false;
 
     if selected.iter().any(|s| s == "brew") {
         println!("[brew] 正在刷新索引: brew update --quiet");
@@ -1670,8 +1672,7 @@ fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
     }
 
     if selected.iter().any(|s| s == "cargo") {
-        let self_pkg = env!("CARGO_PKG_NAME");
-        let self_needs_update = state
+        cargo_self_needs_update = state
             .cargo_updatable_packages
             .iter()
             .any(|pkg| pkg.as_str() == self_pkg);
@@ -1682,51 +1683,27 @@ fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
             .cloned()
             .collect();
 
-        if targets.is_empty() && !self_needs_update {
-            println!("[cargo] 无可升级 crate, 跳过.");
+        if targets.is_empty() {
+            if cargo_self_needs_update {
+                println!("[cargo] 检测到 updt 自身可升级, 将在最后单独升级.");
+            } else {
+                println!("[cargo] 无可升级 crate, 跳过.");
+            }
         } else {
-            if !targets.is_empty() {
-                let mut args = Vec::with_capacity(targets.len());
-                for pkg in &targets {
-                    args.push(pkg.as_str());
-                }
-                println!("[cargo] 正在执行: cargo install-update {}", targets.join(" "));
-                match run_cargo_install_update_inherit(&args) {
-                    Ok(true) => println!("[cargo] 其他已安装 crate 升级完成."),
-                    _ => {
-                        println!("[cargo] 已安装 crate 升级失败.");
-                        run_fail = true;
-                    }
+            let mut args = Vec::with_capacity(targets.len());
+            for pkg in &targets {
+                args.push(pkg.as_str());
+            }
+            println!("[cargo] 正在执行: cargo install-update {}", targets.join(" "));
+            match run_cargo_install_update_inherit(&args) {
+                Ok(true) => println!("[cargo] 其他已安装 crate 升级完成."),
+                _ => {
+                    println!("[cargo] 已安装 crate 升级失败.");
+                    run_fail = true;
                 }
             }
-
-            if self_needs_update {
-                #[cfg(windows)]
-                {
-                    println!("[cargo] 检测到 updt 自身可升级, 正在安排退出后后台自更新...");
-                    match schedule_windows_self_update(self_pkg) {
-                        Ok(()) => {
-                            println!("[cargo] 已启动后台自更新任务. updt 退出后将自动更新自身.");
-                        }
-                        Err(err) => {
-                            println!("[cargo] 启动后台自更新任务失败: {err}");
-                            println!("[cargo] 可手动执行: cargo install-update updt");
-                            run_fail = true;
-                        }
-                    }
-                }
-
-                #[cfg(not(windows))]
-                {
-                    println!("[cargo] 正在执行: cargo install-update updt");
-                    match run_cargo_install_update_inherit(&[self_pkg]) {
-                        Ok(true) => println!("[cargo] updt 自身升级完成."),
-                        _ => {
-                            println!("[cargo] updt 自身升级失败.");
-                            run_fail = true;
-                        }
-                    }
-                }
+            if cargo_self_needs_update {
+                println!("[cargo] updt 自身将放到最后单独升级.");
             }
         }
     }
@@ -1791,6 +1768,35 @@ fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
             _ => {
                 println!("[pkg] 升级失败: pkg update 失败.");
                 run_fail = true;
+            }
+        }
+    }
+
+    if cargo_self_needs_update {
+        #[cfg(windows)]
+        {
+            println!("[cargo] 即将单独升级 updt: 先退出当前 updt, 再执行 cargo install-update updt");
+            match schedule_windows_self_update(self_pkg) {
+                Ok(()) => {
+                    println!("[cargo] 已安排后台自更新任务, 本次 updt 退出后自动升级.");
+                }
+                Err(err) => {
+                    println!("[cargo] 安排后台自更新失败: {err}");
+                    println!("[cargo] 可手动执行: cargo install-update updt");
+                    run_fail = true;
+                }
+            }
+        }
+
+        #[cfg(not(windows))]
+        {
+            println!("[cargo] 正在执行: cargo install-update updt");
+            match run_cargo_install_update_inherit(&[self_pkg]) {
+                Ok(true) => println!("[cargo] updt 自身升级完成."),
+                _ => {
+                    println!("[cargo] updt 自身升级失败.");
+                    run_fail = true;
+                }
             }
         }
     }
