@@ -579,11 +579,11 @@ fn select_targets_prompt(state: &AppState, upgradable_targets: &[String]) -> Vec
         println!("{}", target_label(target));
         print_target_updatable_items(state, target);
         let message = format!("是否升级 {}", target_label(target));
-        print!("{message} [y/N]: ");
+        print!("{message} [Y/n]: ");
         let _ = io::stdout().flush();
         let mut answer = String::new();
         if io::stdin().read_line(&mut answer).is_ok()
-            && matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+            && matches!(answer.trim().to_ascii_lowercase().as_str(), "" | "y" | "yes")
         {
             selected_targets.push(target.clone());
         }
@@ -609,7 +609,7 @@ fn select_targets_tui(
     }
 
     let mut cursor = 0usize;
-    let mut selected = vec![false; upgradable_targets.len()];
+    let mut selected = vec![true; upgradable_targets.len()];
 
     loop {
         terminal.draw(|frame| {
