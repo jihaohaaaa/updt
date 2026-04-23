@@ -1386,6 +1386,18 @@ fn check_pkg_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     }
 }
 
+fn extract_marker_count(output: &str, marker: &str) -> Option<usize> {
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if let Some(raw) = trimmed.strip_prefix(marker)
+            && let Ok(value) = raw.trim().parse::<usize>()
+        {
+            return Some(value);
+        }
+    }
+    None
+}
+
 fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     if !state.enable_nvim {
         logs.push(log_pkg_line("nvim", "按系统策略跳过.", MsgKind::Warn));
@@ -1440,21 +1452,7 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     }
     state.nvim_mason_available = mason_out.contains("UPDT_MASON_OK");
 
-    if state.nvim_lazy_available {
-        state
-            .nvim_updatable_components
-            .push("Lazy plugins (Lazy! sync)".to_string());
-    }
-    if state.nvim_mason_available {
-        state
-            .nvim_updatable_components
-            .push("Mason registry (MasonUpdate)".to_string());
-        state
-            .nvim_updatable_components
-            .push("Mason installed tools (MasonInstall <installed>)".to_string());
-    }
-
-    if state.nvim_updatable_components.is_empty() {
+    if !state.nvim_lazy_available && !state.nvim_mason_available {
         logs.push(log_pkg_line(
             "nvim",
             "未检测到 Lazy 或 Mason, 跳过.",
@@ -1463,12 +1461,91 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     }
 
+    if state.nvim_lazy_available {
+        let Ok((lazy_count_status, lazy_count_out)) = run_nvim_headless_capture(&[
+            "+lua local checker=require('lazy.manage.checker'); checker.check({show=false}); vim.wait(120000, function() return not checker.running end, 200); local n=0; for _ in pairs(checker.updated or {}) do n=n+1 end; print('UPDT_LAZY_COUNT='..n)",
+            "+qa",
+        ]) else {
+            state.nvim_check_failed = true;
+            logs.push(log_pkg_line(
+                "nvim",
+                "检查失败: Lazy 更新计数命令失败.",
+                MsgKind::Warn,
+            ));
+            return;
+        };
+        if lazy_count_status != 0 {
+            state.nvim_check_failed = true;
+            logs.push(log_pkg_line(
+                "nvim",
+                &format!("检查失败: Lazy 计数退出码 {lazy_count_status}."),
+                MsgKind::Warn,
+            ));
+            return;
+        }
+        if let Some(lazy_count) = extract_marker_count(&lazy_count_out, "UPDT_LAZY_COUNT=") {
+            if lazy_count > 0 {
+                state
+                    .nvim_updatable_components
+                    .push(format!("Lazy plugins: {lazy_count} 项可更新"));
+            }
+        } else {
+            state.nvim_check_failed = true;
+            logs.push(log_pkg_line(
+                "nvim",
+                "检查失败: Lazy 计数输出解析失败.",
+                MsgKind::Warn,
+            ));
+            return;
+        }
+    }
+
+    if state.nvim_mason_available {
+        let Ok((mason_count_status, mason_count_out)) = run_nvim_headless_capture(&[
+            "+lua local reg=require('mason-registry'); local ok,pkgs=pcall(reg.get_installed_packages); if not ok then print('UPDT_MASON_COUNT=0') return end; local n=0; for _,p in ipairs(pkgs) do local ok_i,iv=pcall(p.get_installed_version,p); local ok_l,lv=pcall(p.get_latest_version,p); if ok_i and ok_l and tostring(iv)~=tostring(lv) then n=n+1 end end; print('UPDT_MASON_COUNT='..n)",
+            "+qa",
+        ]) else {
+            state.nvim_check_failed = true;
+            logs.push(log_pkg_line(
+                "nvim",
+                "检查失败: Mason 更新计数命令失败.",
+                MsgKind::Warn,
+            ));
+            return;
+        };
+        if mason_count_status != 0 {
+            state.nvim_check_failed = true;
+            logs.push(log_pkg_line(
+                "nvim",
+                &format!("检查失败: Mason 计数退出码 {mason_count_status}."),
+                MsgKind::Warn,
+            ));
+            return;
+        }
+        if let Some(mason_count) = extract_marker_count(&mason_count_out, "UPDT_MASON_COUNT=") {
+            if mason_count > 0 {
+                state
+                    .nvim_updatable_components
+                    .push(format!("Mason tools: {mason_count} 项可更新"));
+            }
+        } else {
+            state.nvim_check_failed = true;
+            logs.push(log_pkg_line(
+                "nvim",
+                "检查失败: Mason 计数输出解析失败.",
+                MsgKind::Warn,
+            ));
+            return;
+        }
+    }
+
+    if state.nvim_updatable_components.is_empty() {
+        logs.push(log_pkg_line("nvim", "Neovim 插件与 Mason 已是最新.", MsgKind::Ok));
+        return;
+    }
+
     state.nvim_has_updates = true;
-    logs.push(log_pkg_line(
-        "nvim",
-        "可执行 Neovim 插件和 Mason 更新.",
-        MsgKind::Ok,
-    ));
+    logs.push(log_pkg_line("nvim", "检测到可更新项:", MsgKind::Info));
     for item in &state.nvim_updatable_components {
         logs.push(format!("  - {item}"));
     }
