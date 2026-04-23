@@ -29,8 +29,8 @@ use std::time::Duration;
 
 type AppTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 
-const TARGET_IDS: [&str; 8] = [
-    "brew", "npm", "cargo", "rustup", "paru", "flatpak", "pacman", "pkg",
+const TARGET_IDS: [&str; 9] = [
+    "brew", "npm", "cargo", "nvim", "rustup", "paru", "flatpak", "pacman", "pkg",
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -83,6 +83,12 @@ struct AppState {
     pkg_has_updates: bool,
     pkg_check_failed: bool,
     pkg_updatable_packages: Vec<String>,
+    nvim_installed: bool,
+    nvim_has_updates: bool,
+    nvim_check_failed: bool,
+    nvim_lazy_available: bool,
+    nvim_mason_available: bool,
+    nvim_updatable_components: Vec<String>,
     is_arch_linux: bool,
     is_termux: bool,
     system_profile: SystemProfile,
@@ -94,6 +100,7 @@ struct AppState {
     enable_pacman: bool,
     enable_flatpak: bool,
     enable_pkg: bool,
+    enable_nvim: bool,
 }
 
 impl Default for AppState {
@@ -133,6 +140,12 @@ impl Default for AppState {
             pkg_has_updates: false,
             pkg_check_failed: false,
             pkg_updatable_packages: vec![],
+            nvim_installed: false,
+            nvim_has_updates: false,
+            nvim_check_failed: false,
+            nvim_lazy_available: false,
+            nvim_mason_available: false,
+            nvim_updatable_components: vec![],
             is_arch_linux: false,
             is_termux: false,
             system_profile: SystemProfile::Unknown,
@@ -144,6 +157,7 @@ impl Default for AppState {
             enable_pacman: false,
             enable_flatpak: false,
             enable_pkg: false,
+            enable_nvim: false,
         }
     }
 }
@@ -153,6 +167,7 @@ fn target_label(id: &str) -> &'static str {
         "brew" => "Homebrew",
         "npm" => "npm",
         "cargo" => "cargo",
+        "nvim" => "Neovim",
         "rustup" => "rustup",
         "paru" => "paru",
         "flatpak" => "flatpak",
@@ -262,6 +277,7 @@ fn section_title(target: &str) -> &'static str {
         "brew" => "Homebrew",
         "npm" => "npm (global)",
         "cargo" => "cargo",
+        "nvim" => "Neovim (Lazy/Mason)",
         "rustup" => "rustup",
         "paru" => "paru (AUR)",
         "flatpak" => "flatpak",
@@ -304,6 +320,17 @@ fn summarize_target_status(target: &str, state: &AppState) -> (MsgKind, &'static
                 (MsgKind::Warn, "检查失败")
             } else if state.cargo_has_updates {
                 (MsgKind::Warn, "发现可升级项")
+            } else {
+                (MsgKind::Ok, "当前最新")
+            }
+        }
+        "nvim" => {
+            if !state.enable_nvim || !state.nvim_installed {
+                (MsgKind::Warn, "已跳过")
+            } else if state.nvim_check_failed {
+                (MsgKind::Warn, "检查失败")
+            } else if state.nvim_has_updates {
+                (MsgKind::Warn, "可执行更新")
             } else {
                 (MsgKind::Ok, "当前最新")
             }
@@ -485,6 +512,18 @@ fn run_cargo_install_update_inherit(args: &[&str]) -> io::Result<bool> {
     run_inherit("cargo-install-update", &proxy_args)
 }
 
+fn run_nvim_headless_capture(args: &[&str]) -> io::Result<(i32, String)> {
+    let mut all_args = vec!["--headless"];
+    all_args.extend_from_slice(args);
+    run_capture("nvim", &all_args)
+}
+
+fn run_nvim_headless_inherit(args: &[&str]) -> io::Result<bool> {
+    let mut all_args = vec!["--headless"];
+    all_args.extend_from_slice(args);
+    run_inherit("nvim", &all_args)
+}
+
 fn first_json_payload(output: &str) -> Option<&str> {
     let start = output.find('{')?;
     let bytes = output.as_bytes();
@@ -535,6 +574,7 @@ fn updatable_items_for_target(state: &AppState, target: &str) -> Vec<String> {
             .collect(),
         "npm" => state.npm_updatable_packages.clone(),
         "cargo" => state.cargo_updatable_packages.clone(),
+        "nvim" => state.nvim_updatable_components.clone(),
         "rustup" => state.rustup_updatable_toolchains.clone(),
         "paru" => state.paru_updatable_packages.clone(),
         "flatpak" => state.flatpak_updatable_refs.clone(),
@@ -736,7 +776,7 @@ fn install_fish_completion() -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::other("invalid completion path"))?;
     fs::create_dir_all(parent)?;
 
-    let script = r#"set -l __updt_targets brew npm cargo rustup paru flatpak pacman pkg
+    let script = r#"set -l __updt_targets brew npm cargo nvim rustup paru flatpak pacman pkg
 
 complete -c updt -f
 complete -c updt -s h -l help -d 'Print help'
@@ -752,6 +792,7 @@ complete -c updt -n '__fish_seen_subcommand_from update' -s h -l help -d 'Print 
 
 fn parse_profile(state: &mut AppState) {
     let prefix = env::var("PREFIX").unwrap_or_default();
+    state.enable_nvim = true;
     state.is_termux = prefix.contains("com.termux")
         || Path::new("/data/data/com.termux/files/usr/bin/pkg").exists();
     state.is_arch_linux = PathBuf::from("/etc/arch-release").is_file();
@@ -798,6 +839,7 @@ fn target_enabled(state: &AppState, target: &str) -> bool {
         "brew" => state.enable_brew,
         "npm" => state.enable_npm,
         "cargo" => state.enable_cargo,
+        "nvim" => state.enable_nvim,
         "rustup" => state.enable_rustup,
         "paru" => state.enable_paru,
         "flatpak" => state.enable_flatpak,
@@ -1344,6 +1386,94 @@ fn check_pkg_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     }
 }
 
+fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
+    if !state.enable_nvim {
+        logs.push(log_pkg_line("nvim", "按系统策略跳过.", MsgKind::Warn));
+        return;
+    }
+    if !command_exists("nvim") {
+        logs.push(log_pkg_line("nvim", "未安装, 跳过.", MsgKind::Warn));
+        return;
+    }
+    state.nvim_installed = true;
+    logs.push(log_pkg_line(
+        "nvim",
+        "正在检查 Lazy/Mason 可用性...",
+        MsgKind::Info,
+    ));
+
+    let Ok((lazy_status, lazy_out)) = run_nvim_headless_capture(&[
+        "+lua local ok=pcall(require,'lazy'); print(ok and 'UPDT_LAZY_OK' or 'UPDT_LAZY_MISSING')",
+        "+qa",
+    ]) else {
+        state.nvim_check_failed = true;
+        logs.push(log_pkg_line("nvim", "检查失败: 无法启动 nvim.", MsgKind::Warn));
+        return;
+    };
+    if lazy_status != 0 {
+        state.nvim_check_failed = true;
+        logs.push(log_pkg_line(
+            "nvim",
+            &format!("检查失败: Lazy 探测退出码 {lazy_status}."),
+            MsgKind::Warn,
+        ));
+        return;
+    }
+    state.nvim_lazy_available = lazy_out.contains("UPDT_LAZY_OK");
+
+    let Ok((mason_status, mason_out)) = run_nvim_headless_capture(&[
+        "+lua local ok=pcall(require,'mason'); print(ok and 'UPDT_MASON_OK' or 'UPDT_MASON_MISSING')",
+        "+qa",
+    ]) else {
+        state.nvim_check_failed = true;
+        logs.push(log_pkg_line("nvim", "检查失败: Mason 探测命令失败.", MsgKind::Warn));
+        return;
+    };
+    if mason_status != 0 {
+        state.nvim_check_failed = true;
+        logs.push(log_pkg_line(
+            "nvim",
+            &format!("检查失败: Mason 探测退出码 {mason_status}."),
+            MsgKind::Warn,
+        ));
+        return;
+    }
+    state.nvim_mason_available = mason_out.contains("UPDT_MASON_OK");
+
+    if state.nvim_lazy_available {
+        state
+            .nvim_updatable_components
+            .push("Lazy plugins (Lazy! sync)".to_string());
+    }
+    if state.nvim_mason_available {
+        state
+            .nvim_updatable_components
+            .push("Mason registry (MasonUpdate)".to_string());
+        state
+            .nvim_updatable_components
+            .push("Mason installed tools (MasonInstall <installed>)".to_string());
+    }
+
+    if state.nvim_updatable_components.is_empty() {
+        logs.push(log_pkg_line(
+            "nvim",
+            "未检测到 Lazy 或 Mason, 跳过.",
+            MsgKind::Warn,
+        ));
+        return;
+    }
+
+    state.nvim_has_updates = true;
+    logs.push(log_pkg_line(
+        "nvim",
+        "可执行 Neovim 插件和 Mason 更新.",
+        MsgKind::Ok,
+    ));
+    for item in &state.nvim_updatable_components {
+        logs.push(format!("  - {item}"));
+    }
+}
+
 fn run_single_check(target: &str) -> CheckResult {
     let mut local = AppState::default();
     let mut logs = Vec::new();
@@ -1352,6 +1482,7 @@ fn run_single_check(target: &str) -> CheckResult {
         "brew" => check_brew_quiet(&mut local, &mut logs),
         "npm" => check_npm_quiet(&mut local, &mut logs),
         "cargo" => check_cargo_quiet(&mut local, &mut logs),
+        "nvim" => check_nvim_quiet(&mut local, &mut logs),
         "rustup" => check_rustup_quiet(&mut local, &mut logs),
         "paru" => check_paru_quiet(&mut local, &mut logs),
         "flatpak" => check_flatpak_quiet(&mut local, &mut logs),
@@ -1387,6 +1518,14 @@ fn merge_check_result(state: &mut AppState, target: &str, local: AppState) {
             state.cargo_check_failed = local.cargo_check_failed;
             state.cargo_updater_installed = local.cargo_updater_installed;
             state.cargo_updatable_packages = local.cargo_updatable_packages;
+        }
+        "nvim" => {
+            state.nvim_installed = local.nvim_installed;
+            state.nvim_has_updates = local.nvim_has_updates;
+            state.nvim_check_failed = local.nvim_check_failed;
+            state.nvim_lazy_available = local.nvim_lazy_available;
+            state.nvim_mason_available = local.nvim_mason_available;
+            state.nvim_updatable_components = local.nvim_updatable_components;
         }
         "rustup" => {
             state.rustup_installed = local.rustup_installed;
@@ -1708,6 +1847,53 @@ fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
         }
     }
 
+    if selected.iter().any(|s| s == "nvim") {
+        if !state.nvim_installed {
+            println!("[nvim] 未安装 nvim, 跳过.");
+        } else {
+            if state.nvim_lazy_available {
+                println!("[nvim] 正在执行: nvim --headless \"+Lazy! sync\" +qa");
+                match run_nvim_headless_inherit(&["+Lazy! sync", "+qa"]) {
+                    Ok(true) => println!("[nvim] Lazy 插件更新完成."),
+                    _ => {
+                        println!("[nvim] Lazy 插件更新失败.");
+                        run_fail = true;
+                    }
+                }
+            } else {
+                println!("[nvim] 未检测到 Lazy 插件管理器, 跳过插件更新.");
+            }
+
+            if state.nvim_mason_available {
+                println!("[nvim] 正在执行: nvim --headless \"+Lazy load mason.nvim\" \"+MasonUpdate\" +qa");
+                match run_nvim_headless_inherit(&["+Lazy load mason.nvim", "+MasonUpdate", "+qa"]) {
+                    Ok(true) => println!("[nvim] Mason registry 更新完成."),
+                    _ => {
+                        println!("[nvim] Mason registry 更新失败.");
+                        run_fail = true;
+                    }
+                }
+
+                println!(
+                    "[nvim] 正在执行: nvim --headless \"+Lazy load mason.nvim\" \"+lua ... MasonInstall <installed>\" +qa"
+                );
+                match run_nvim_headless_inherit(&[
+                    "+Lazy load mason.nvim",
+                    "+lua local root=vim.fn.stdpath('data')..'/mason/packages'; local ok,dir=pcall(vim.fs.dir,root); if not ok or not dir then return end; local pkgs={}; for name,t in dir do if t=='directory' then table.insert(pkgs,name) end end; table.sort(pkgs); if #pkgs>0 then vim.cmd('MasonInstall '..table.concat(pkgs,' ')) end",
+                    "+qa",
+                ]) {
+                    Ok(true) => println!("[nvim] Mason 已安装工具更新完成."),
+                    _ => {
+                        println!("[nvim] Mason 已安装工具更新失败.");
+                        run_fail = true;
+                    }
+                }
+            } else {
+                println!("[nvim] 未检测到 mason.nvim, 跳过 Mason 更新.");
+            }
+        }
+    }
+
     if selected.iter().any(|s| s == "rustup") {
         println!("[rustup] 正在执行: rustup update");
         match run_inherit("rustup", &["update"]) {
@@ -1829,6 +2015,9 @@ fn build_upgradable_targets(state: &AppState) -> Vec<String> {
     if state.cargo_has_updates {
         upgradable_targets.push("cargo".to_string());
     }
+    if state.nvim_has_updates {
+        upgradable_targets.push("nvim".to_string());
+    }
     if state.rustup_has_updates {
         upgradable_targets.push("rustup".to_string());
     }
@@ -1866,6 +2055,7 @@ fn any_check_failed(state: &AppState) -> bool {
     state.brew_check_failed
         || state.npm_check_failed
         || state.cargo_check_failed
+        || state.nvim_check_failed
         || state.rustup_check_failed
         || state.paru_check_failed
         || state.flatpak_check_failed
