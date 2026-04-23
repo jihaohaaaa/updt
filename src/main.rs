@@ -1379,13 +1379,19 @@ fn check_pacman_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     }
     state.pacman_installed = true;
-    let (status, output) = if command_exists("checkupdates") {
+    let use_checkupdates = command_exists("checkupdates");
+    let (status, output) = if use_checkupdates {
         run_capture("checkupdates", &[]).unwrap_or((-1, String::new()))
     } else {
         run_capture("pacman", &["-Qu"]).unwrap_or((-1, String::new()))
     };
     if status != 0 {
-        if status == 2 {
+        let no_updates = if use_checkupdates {
+            status == 2
+        } else {
+            status == 1 && output.trim().is_empty()
+        };
+        if no_updates {
             logs.push(log_pkg_line("pacman", "已是最新.", MsgKind::Ok));
         } else {
             state.pacman_check_failed = true;
