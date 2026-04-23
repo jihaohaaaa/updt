@@ -1778,10 +1778,10 @@ fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
             println!("[cargo] 即将单独升级 updt: 先退出当前 updt, 再执行 cargo install-update updt");
             match schedule_windows_self_update(self_pkg) {
                 Ok(()) => {
-                    println!("[cargo] 已安排后台自更新任务, 本次 updt 退出后自动升级.");
+                    println!("[cargo] 已启动前台自更新窗口, 本次 updt 退出后会显示升级过程.");
                 }
                 Err(err) => {
-                    println!("[cargo] 安排后台自更新失败: {err}");
+                    println!("[cargo] 启动前台自更新窗口失败: {err}");
                     println!("[cargo] 可手动执行: cargo install-update updt");
                     run_fail = true;
                 }
@@ -1981,17 +1981,23 @@ fn run_inherit_outside_tui(
 fn schedule_windows_self_update(pkg: &str) -> io::Result<()> {
     let parent_pid = process::id();
     let script = format!(
-        "$ErrorActionPreference='SilentlyContinue'; \
+        "$ErrorActionPreference='Continue'; \
 $parentPid={parent_pid}; \
 while (Get-Process -Id $parentPid -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 200 }}; \
-cargo install-update {pkg}"
+cargo install-update {pkg}; \
+Write-Host ''; \
+Write-Host 'Self-update finished. Press Enter to close this window.'; \
+[void](Read-Host)"
     );
 
-    Command::new("powershell.exe")
+    Command::new("cmd.exe")
+        .arg("/C")
+        .arg("start")
+        .arg("")
+        .arg("powershell.exe")
+        .arg("-NoLogo")
         .arg("-NoProfile")
-        .arg("-NonInteractive")
-        .arg("-WindowStyle")
-        .arg("Hidden")
+        .arg("-NoExit")
         .arg("-Command")
         .arg(script)
         .stdin(Stdio::null())
