@@ -1634,7 +1634,7 @@ fn run_checks(state: &mut AppState, requested: &[String], start_time: &str) {
     }
 }
 
-fn upgrade_selected(selected: &[String]) -> bool {
+fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
     print_section("执行升级");
     let mut run_fail = false;
 
@@ -1670,12 +1670,63 @@ fn upgrade_selected(selected: &[String]) -> bool {
     }
 
     if selected.iter().any(|s| s == "cargo") {
-        println!("[cargo] 正在执行: cargo install-update -a");
-        match run_cargo_install_update_inherit(&["-a"]) {
-            Ok(true) => println!("[cargo] 已安装 crate 升级完成."),
-            _ => {
-                println!("[cargo] 已安装 crate 升级失败.");
-                run_fail = true;
+        let self_pkg = env!("CARGO_PKG_NAME");
+        let self_needs_update = state
+            .cargo_updatable_packages
+            .iter()
+            .any(|pkg| pkg.as_str() == self_pkg);
+        let targets: Vec<String> = state
+            .cargo_updatable_packages
+            .iter()
+            .filter(|pkg| pkg.as_str() != self_pkg)
+            .cloned()
+            .collect();
+
+        if targets.is_empty() && !self_needs_update {
+            println!("[cargo] 无可升级 crate, 跳过.");
+        } else {
+            if !targets.is_empty() {
+                let mut args = Vec::with_capacity(targets.len());
+                for pkg in &targets {
+                    args.push(pkg.as_str());
+                }
+                println!("[cargo] 正在执行: cargo install-update {}", targets.join(" "));
+                match run_cargo_install_update_inherit(&args) {
+                    Ok(true) => println!("[cargo] 其他已安装 crate 升级完成."),
+                    _ => {
+                        println!("[cargo] 已安装 crate 升级失败.");
+                        run_fail = true;
+                    }
+                }
+            }
+
+            if self_needs_update {
+                #[cfg(windows)]
+                {
+                    println!("[cargo] 检测到 updt 自身可升级, 正在安排退出后后台自更新...");
+                    match schedule_windows_self_update(self_pkg) {
+                        Ok(()) => {
+                            println!("[cargo] 已启动后台自更新任务. updt 退出后将自动更新自身.");
+                        }
+                        Err(err) => {
+                            println!("[cargo] 启动后台自更新任务失败: {err}");
+                            println!("[cargo] 可手动执行: cargo install-update updt");
+                            run_fail = true;
+                        }
+                    }
+                }
+
+                #[cfg(not(windows))]
+                {
+                    println!("[cargo] 正在执行: cargo install-update updt");
+                    match run_cargo_install_update_inherit(&[self_pkg]) {
+                        Ok(true) => println!("[cargo] updt 自身升级完成."),
+                        _ => {
+                            println!("[cargo] updt 自身升级失败.");
+                            run_fail = true;
+                        }
+                    }
+                }
             }
         }
     }
@@ -1920,6 +1971,30 @@ fn run_inherit_outside_tui(
     command_result
 }
 
+#[cfg(windows)]
+fn schedule_windows_self_update(pkg: &str) -> io::Result<()> {
+    let parent_pid = process::id();
+    let script = format!(
+        "$ErrorActionPreference='SilentlyContinue'; \
+$parentPid={parent_pid}; \
+while (Get-Process -Id $parentPid -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 200 }}; \
+cargo install-update {pkg}"
+    );
+
+    Command::new("powershell.exe")
+        .arg("-NoProfile")
+        .arg("-NonInteractive")
+        .arg("-WindowStyle")
+        .arg("Hidden")
+        .arg("-Command")
+        .arg(script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
+}
+
 fn offer_install_cargo_update_tui(
     terminal: &mut AppTerminal,
     state: &mut AppState,
@@ -2154,7 +2229,7 @@ fn main() {
         match run_interactive_flow(&mut state, &requested_updates, &start_time) {
             Ok(InteractiveResult::Exit(code)) => process::exit(code),
             Ok(InteractiveResult::RunUpgrade(selected_targets)) => {
-                if upgrade_selected(&selected_targets) {
+                if upgrade_selected(&state, &selected_targets) {
                     process::exit(0);
                 }
                 process::exit(1);
@@ -2218,7 +2293,7 @@ fn main() {
         process::exit(0);
     }
 
-    if upgrade_selected(&selected_targets) {
+    if upgrade_selected(&state, &selected_targets) {
         process::exit(0);
     }
     process::exit(1);
