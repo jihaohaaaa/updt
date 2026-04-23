@@ -11,7 +11,8 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -644,6 +645,16 @@ fn select_targets_tui(
     state: &AppState,
     upgradable_targets: &[String],
 ) -> io::Result<Vec<String>> {
+    select_targets_tui_with_checks(terminal, state, upgradable_targets, &[], "")
+}
+
+fn select_targets_tui_with_checks(
+    terminal: &mut AppTerminal,
+    state: &AppState,
+    upgradable_targets: &[String],
+    check_targets: &[String],
+    start_time: &str,
+) -> io::Result<Vec<String>> {
     if upgradable_targets.is_empty() {
         return Ok(Vec::new());
     }
@@ -653,49 +664,129 @@ fn select_targets_tui(
 
     loop {
         terminal.draw(|frame| {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(3), Constraint::Min(1)])
-                .split(frame.area());
+            let show_checks = !check_targets.is_empty() && !start_time.is_empty();
+            if show_checks {
+                let area = frame.area();
+                let targets_height =
+                    ((check_targets.len() as u16) + 2).clamp(3, area.height.saturating_sub(7));
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(5),
+                        Constraint::Length(targets_height),
+                        Constraint::Length(3),
+                        Constraint::Min(1),
+                    ])
+                    .split(area);
 
-            let help = Paragraph::new("Up/Down: move, Space: toggle, Enter: confirm, q/Esc: quit")
-                .block(Block::default().title("updt").borders(Borders::ALL));
-            frame.render_widget(help, chunks[0]);
+                let header = Paragraph::new(format!(
+                    "开始时间: {start_time}\n系统策略: {}\n进度: {}/{}",
+                    profile_name(state.system_profile),
+                    check_targets.len(),
+                    check_targets.len()
+                ))
+                .block(Block::default().title("检查可升级项").borders(Borders::ALL));
+                frame.render_widget(header, chunks[0]);
 
-            let items: Vec<ListItem> = upgradable_targets
-                .iter()
-                .enumerate()
-                .flat_map(|(idx, item)| {
-                    let mark = if selected[idx] { "[x]" } else { "[ ]" };
-                    let mut rows = vec![
-                        ListItem::new(format!("{mark} {}", target_label(item)))
-                            .style(Style::default().add_modifier(Modifier::BOLD)),
-                    ];
-                    rows.extend(
-                        updatable_items_for_target(state, item)
-                            .into_iter()
-                            .map(|pkg| ListItem::new(format!("  - {pkg}"))),
-                    );
-                    rows
-                })
-                .collect();
+                let target_items: Vec<ListItem> = check_targets
+                    .iter()
+                    .map(|target| {
+                        let (kind, summary) = summarize_target_status(target, state);
+                        let style = match kind {
+                            MsgKind::Info => Style::default().fg(Color::Cyan),
+                            MsgKind::Ok => Style::default().fg(Color::Green),
+                            MsgKind::Warn => Style::default().fg(Color::Yellow),
+                        };
+                        ListItem::new(format!("{:<10} {}", target_label(target), summary)).style(style)
+                    })
+                    .collect();
+                let target_list =
+                    List::new(target_items).block(Block::default().title("目标").borders(Borders::ALL));
+                frame.render_widget(target_list, chunks[1]);
 
-            let list = List::new(items)
-                .block(
-                    Block::default()
-                        .title("选择要升级的项目")
-                        .borders(Borders::ALL),
-                )
-                .highlight_style(
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                )
-                .highlight_symbol(">> ");
+                let help = Paragraph::new("Up/Down: move, Space: toggle, Enter: confirm, q/Esc: quit")
+                    .block(Block::default().title("updt").borders(Borders::ALL));
+                frame.render_widget(help, chunks[2]);
 
-            let mut list_state = ListState::default();
-            list_state.select(Some(target_row_index(upgradable_targets, cursor, state)));
-            frame.render_stateful_widget(list, chunks[1], &mut list_state);
+                let items: Vec<ListItem> = upgradable_targets
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(idx, item)| {
+                        let mark = if selected[idx] { "[x]" } else { "[ ]" };
+                        let mut rows = vec![
+                            ListItem::new(format!("{mark} {}", target_label(item)))
+                                .style(Style::default().add_modifier(Modifier::BOLD)),
+                        ];
+                        rows.extend(
+                            updatable_items_for_target(state, item)
+                                .into_iter()
+                                .map(|pkg| ListItem::new(format!("    - {pkg}"))),
+                        );
+                        rows
+                    })
+                    .collect();
+
+                let list = List::new(items)
+                    .block(
+                        Block::default()
+                            .title("选择要升级的项目")
+                            .borders(Borders::ALL),
+                    )
+                    .highlight_style(
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .highlight_symbol(">> ");
+
+                let mut list_state = ListState::default();
+                list_state.select(Some(target_row_index(upgradable_targets, cursor, state)));
+                frame.render_stateful_widget(list, chunks[3], &mut list_state);
+            } else {
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(3), Constraint::Min(1)])
+                    .split(frame.area());
+
+                let help = Paragraph::new("Up/Down: move, Space: toggle, Enter: confirm, q/Esc: quit")
+                    .block(Block::default().title("updt").borders(Borders::ALL));
+                frame.render_widget(help, chunks[0]);
+
+                let items: Vec<ListItem> = upgradable_targets
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(idx, item)| {
+                        let mark = if selected[idx] { "[x]" } else { "[ ]" };
+                        let mut rows = vec![
+                            ListItem::new(format!("{mark} {}", target_label(item)))
+                                .style(Style::default().add_modifier(Modifier::BOLD)),
+                        ];
+                        rows.extend(
+                            updatable_items_for_target(state, item)
+                                .into_iter()
+                                .map(|pkg| ListItem::new(format!("  - {pkg}"))),
+                        );
+                        rows
+                    })
+                    .collect();
+
+                let list = List::new(items)
+                    .block(
+                        Block::default()
+                            .title("选择要升级的项目")
+                            .borders(Borders::ALL),
+                    )
+                    .highlight_style(
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .highlight_symbol(">> ");
+
+                let mut list_state = ListState::default();
+                list_state.select(Some(target_row_index(upgradable_targets, cursor, state)));
+                frame.render_stateful_widget(list, chunks[1], &mut list_state);
+            }
         })?;
 
         if !event::poll(Duration::from_millis(250))? {
@@ -2183,16 +2274,29 @@ fn strip_ansi_control_sequences(text: &str) -> String {
 }
 
 fn wait_tui_message(terminal: &mut AppTerminal, title: &str, lines: &[String]) -> io::Result<bool> {
-    let clean_text = lines
+    let clean_lines = lines
         .iter()
         .map(|line| strip_ansi_control_sequences(line))
+        .collect::<Vec<_>>();
+    let body = clean_lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .cloned()
         .collect::<Vec<_>>()
-        .join("\n");
+        .join("  ");
+    let status = format!("[{title}] {body}");
     loop {
         terminal.draw(|frame| {
-            let block = Paragraph::new(clean_text.as_str())
-                .block(Block::default().title(title).borders(Borders::ALL));
-            frame.render_widget(block, frame.area());
+            let area = frame.area();
+            let footer = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(1)])
+                .split(area)[1];
+            frame.render_widget(Clear, footer);
+            frame.render_widget(
+                Paragraph::new(status.as_str()).style(Style::default().fg(Color::Yellow)),
+                footer,
+            );
         })?;
 
         if !event::poll(Duration::from_millis(250))? {
@@ -2211,6 +2315,231 @@ fn wait_tui_message(terminal: &mut AppTerminal, title: &str, lines: &[String]) -
             | KeyCode::Char('Q')
             | KeyCode::Char('n')
             | KeyCode::Char('N') => return Ok(false),
+            _ => {}
+        }
+    }
+}
+
+fn wait_tui_message_on_checks(
+    terminal: &mut AppTerminal,
+    state: &AppState,
+    targets: &[String],
+    start_time: &str,
+    title: &str,
+    lines: &[String],
+) -> io::Result<bool> {
+    let clean_lines = lines
+        .iter()
+        .map(|line| strip_ansi_control_sequences(line))
+        .collect::<Vec<_>>();
+    let body = clean_lines
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("  ");
+    let status = format!("[{title}] {body}");
+
+    loop {
+        terminal.draw(|frame| {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(5), Constraint::Min(1), Constraint::Length(1)])
+                .split(frame.area());
+
+            let header = Paragraph::new(format!(
+                "开始时间: {start_time}\n系统策略: {}\n进度: {}/{}",
+                profile_name(state.system_profile),
+                targets.len(),
+                targets.len()
+            ))
+            .block(Block::default().title("检查可升级项").borders(Borders::ALL));
+            frame.render_widget(header, chunks[0]);
+
+            let items: Vec<ListItem> = targets
+                .iter()
+                .map(|target| {
+                    let (kind, summary) = summarize_target_status(target, state);
+                    let style = match kind {
+                        MsgKind::Info => Style::default().fg(Color::Cyan),
+                        MsgKind::Ok => Style::default().fg(Color::Green),
+                        MsgKind::Warn => Style::default().fg(Color::Yellow),
+                    };
+                    ListItem::new(format!("{:<10} {}", target_label(target), summary)).style(style)
+                })
+                .collect();
+            let list = List::new(items).block(Block::default().title("目标").borders(Borders::ALL));
+            frame.render_widget(list, chunks[1]);
+
+            frame.render_widget(Clear, chunks[2]);
+            frame.render_widget(
+                Paragraph::new(status.as_str()).style(Style::default().fg(Color::Yellow)),
+                chunks[2],
+            );
+        })?;
+
+        if !event::poll(Duration::from_millis(250))? {
+            continue;
+        }
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        match key.code {
+            KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => return Ok(true),
+            KeyCode::Esc
+            | KeyCode::Char('q')
+            | KeyCode::Char('Q')
+            | KeyCode::Char('n')
+            | KeyCode::Char('N') => return Ok(false),
+            _ => {}
+        }
+    }
+}
+
+fn wait_tui_float_on_selection(
+    terminal: &mut AppTerminal,
+    state: &AppState,
+    check_targets: &[String],
+    start_time: &str,
+    upgradable_targets: &[String],
+    selected_targets: &[String],
+    title: &str,
+    lines: &[String],
+) -> io::Result<bool> {
+    let clean_lines = lines
+        .iter()
+        .map(|line| strip_ansi_control_sequences(line))
+        .collect::<Vec<_>>();
+    let mut confirm_selected = true;
+
+    loop {
+        terminal.draw(|frame| {
+            let area = frame.area();
+            let targets_height =
+                ((check_targets.len() as u16) + 2).clamp(3, area.height.saturating_sub(7));
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(5),
+                    Constraint::Length(targets_height),
+                    Constraint::Length(3),
+                    Constraint::Min(1),
+                ])
+                .split(area);
+
+            let header = Paragraph::new(format!(
+                "开始时间: {start_time}\n系统策略: {}\n进度: {}/{}",
+                profile_name(state.system_profile),
+                check_targets.len(),
+                check_targets.len()
+            ))
+            .block(Block::default().title("检查可升级项").borders(Borders::ALL));
+            frame.render_widget(header, chunks[0]);
+
+            let target_items: Vec<ListItem> = check_targets
+                .iter()
+                .map(|target| {
+                    let (kind, summary) = summarize_target_status(target, state);
+                    let style = match kind {
+                        MsgKind::Info => Style::default().fg(Color::Cyan),
+                        MsgKind::Ok => Style::default().fg(Color::Green),
+                        MsgKind::Warn => Style::default().fg(Color::Yellow),
+                    };
+                    ListItem::new(format!("{:<10} {}", target_label(target), summary)).style(style)
+                })
+                .collect();
+            let target_list =
+                List::new(target_items).block(Block::default().title("目标").borders(Borders::ALL));
+            frame.render_widget(target_list, chunks[1]);
+
+            let help = Paragraph::new("Up/Down: move, Space: toggle, Enter: confirm, q/Esc: quit")
+                .block(Block::default().title("updt").borders(Borders::ALL));
+            frame.render_widget(help, chunks[2]);
+
+            let items: Vec<ListItem> = upgradable_targets
+                .iter()
+                .map(|item| {
+                    let checked = selected_targets.iter().any(|t| t == item);
+                    let mark = if checked { "[x]" } else { "[ ]" };
+                    ListItem::new(format!("{mark} {}", target_label(item)))
+                })
+                .collect();
+            let list =
+                List::new(items).block(Block::default().title("选择要升级的项目").borders(Borders::ALL));
+            frame.render_widget(list, chunks[3]);
+
+            let popup_height = ((lines.len() as u16) + 2).clamp(3, area.height.saturating_sub(2));
+            let popup_width = area.width.saturating_mul(80) / 100;
+            let v = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(area.height.saturating_sub(popup_height) / 2),
+                    Constraint::Length(popup_height),
+                    Constraint::Min(0),
+                ])
+                .split(area);
+            let h = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Length(area.width.saturating_sub(popup_width) / 2),
+                    Constraint::Length(popup_width),
+                    Constraint::Min(0),
+                ])
+                .split(v[1]);
+            let popup = h[1];
+
+            frame.render_widget(Clear, popup);
+            let block = Block::default().title(title).borders(Borders::ALL);
+            let inner = block.inner(popup);
+            frame.render_widget(block, popup);
+
+            let inner_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(1)])
+                .split(inner);
+            let body_text = clean_lines.join("\n");
+            frame.render_widget(Paragraph::new(body_text), inner_chunks[0]);
+
+            let (confirm_style, cancel_style) = if confirm_selected {
+                (
+                    Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD),
+                    Style::default().fg(Color::Gray),
+                )
+            } else {
+                (
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD),
+                )
+            };
+            let buttons = Line::from(vec![
+                Span::raw("  "),
+                Span::styled("[ 确认 ]", confirm_style),
+                Span::raw("    "),
+                Span::styled("[ 取消 ]", cancel_style),
+            ]);
+            frame.render_widget(
+                Paragraph::new(buttons).alignment(ratatui::layout::Alignment::Center),
+                inner_chunks[1],
+            );
+        })?;
+
+        if !event::poll(Duration::from_millis(250))? {
+            continue;
+        }
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        match key.code {
+            KeyCode::Left => confirm_selected = true,
+            KeyCode::Right | KeyCode::Tab => confirm_selected = false,
+            KeyCode::Enter => return Ok(confirm_selected),
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => return Ok(false),
             _ => {}
         }
     }
@@ -2452,55 +2781,74 @@ fn run_interactive_flow(
         };
         lines.push("".to_string());
         lines.push("Enter/q/Esc: 退出".to_string());
-        let _ = wait_tui_message(&mut terminal, "汇总", &lines)?;
+        let _ = wait_tui_message_on_checks(&mut terminal, state, &targets, start_time, "汇总", &lines)?;
         return Ok(InteractiveResult::Exit(exit_code));
     }
 
-    let selected_targets = if requested_updates.is_empty() {
-        select_targets_tui(&mut terminal, state, &upgradable_targets)?
-    } else {
-        let (selected, skipped) =
-            resolve_cli_selection_quiet(requested_updates, &upgradable_targets);
-        if !skipped.is_empty() {
-            let mut lines = vec!["以下请求目标当前没有可升级项:".to_string()];
-            lines.extend(
-                skipped
-                    .iter()
-                    .map(|target| format!("  - {}", target_label(target))),
-            );
-            lines.push("".to_string());
-            lines.push("Enter: 继续    q/Esc: 继续".to_string());
-            let _ = wait_tui_message(&mut terminal, "CLI 选择", &lines)?;
+    loop {
+        let selected_targets = if requested_updates.is_empty() {
+            select_targets_tui_with_checks(
+                &mut terminal,
+                state,
+                &upgradable_targets,
+                &targets,
+                start_time,
+            )?
+        } else {
+            let (selected, skipped) =
+                resolve_cli_selection_quiet(requested_updates, &upgradable_targets);
+            if !skipped.is_empty() {
+                let mut lines = vec!["以下请求目标当前没有可升级项:".to_string()];
+                lines.extend(
+                    skipped
+                        .iter()
+                        .map(|target| format!("  - {}", target_label(target))),
+                );
+                lines.push("".to_string());
+                lines.push("Enter: 继续    q/Esc: 继续".to_string());
+                let _ = wait_tui_message(&mut terminal, "CLI 选择", &lines)?;
+            }
+            selected
+        };
+
+        if selected_targets.is_empty() {
+            let _ = wait_tui_message(
+                &mut terminal,
+                "汇总",
+                &[
+                    "未选择任何升级项, 已退出.".to_string(),
+                    "".to_string(),
+                    "Enter/q/Esc: 退出".to_string(),
+                ],
+            )?;
+            return Ok(InteractiveResult::Exit(0));
         }
-        selected
-    };
 
-    if selected_targets.is_empty() {
-        let _ = wait_tui_message(
+        let mut lines = vec!["已选择升级项:".to_string()];
+        lines.extend(
+            selected_targets
+                .iter()
+                .map(|target| format!("  - {}", target_label(target))),
+        );
+        lines.push("".to_string());
+        lines.push("左右键: 选择按钮    Enter: 确认".to_string());
+
+        if wait_tui_float_on_selection(
             &mut terminal,
-            "汇总",
-            &[
-                "未选择任何升级项, 已退出.".to_string(),
-                "".to_string(),
-                "Enter/q/Esc: 退出".to_string(),
-            ],
-        )?;
-        return Ok(InteractiveResult::Exit(0));
-    }
+            state,
+            &targets,
+            start_time,
+            &upgradable_targets,
+            &selected_targets,
+            "执行升级",
+            &lines,
+        )? {
+            return Ok(InteractiveResult::RunUpgrade(selected_targets));
+        }
 
-    let mut lines = vec!["已选择升级项:".to_string()];
-    lines.extend(
-        selected_targets
-            .iter()
-            .map(|target| format!("  - {}", target_label(target))),
-    );
-    lines.push("".to_string());
-    lines.push("Enter: 离开 TUI 并执行升级".to_string());
-    lines.push("q/Esc: 取消并退出".to_string());
-    if wait_tui_message(&mut terminal, "执行升级", &lines)? {
-        Ok(InteractiveResult::RunUpgrade(selected_targets))
-    } else {
-        Ok(InteractiveResult::Exit(0))
+        if !requested_updates.is_empty() {
+            return Ok(InteractiveResult::Exit(0));
+        }
     }
 }
 
