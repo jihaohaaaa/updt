@@ -1990,6 +1990,32 @@ Write-Host 'Self-update finished. Press Enter to close this window.'; \
 [void](Read-Host)"
     );
 
+    let shell = if command_exists("pwsh") {
+        "pwsh"
+    } else {
+        "powershell.exe"
+    };
+
+    let primary = Command::new("cmd.exe")
+        .arg("/C")
+        .arg("start")
+        .arg("")
+        .arg(shell)
+        .arg("-NoLogo")
+        .arg("-NoProfile")
+        .arg("-NoExit")
+        .arg("-Command")
+        .arg(&script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ());
+
+    if primary.is_ok() {
+        return Ok(());
+    }
+
     Command::new("cmd.exe")
         .arg("/C")
         .arg("start")
@@ -1999,7 +2025,7 @@ Write-Host 'Self-update finished. Press Enter to close this window.'; \
         .arg("-NoProfile")
         .arg("-NoExit")
         .arg("-Command")
-        .arg(script)
+        .arg(&script)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
