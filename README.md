@@ -11,13 +11,14 @@ It mirrors the behavior of the original script, but the workflow is implemented 
 - npm global packages
 - cargo installed crates (via `cargo-install-update`)
 - rustup toolchains
+- fnm managed Node.js versions (latest/LTS)
 - scoop packages (Windows)
 - paru AUR packages (Arch Linux)
 - flatpak apps (Arch Linux profile)
 - pacman packages (Arch Linux)
 - pkg packages (Termux)
 
-Windows support includes npm, cargo, rustup, and scoop.
+Windows support includes npm, cargo, rustup, fnm, and scoop.
 Windows system package managers `winget` and `choco` are intentionally unsupported.
 
 ## System policy
@@ -25,9 +26,9 @@ Windows system package managers `winget` and `choco` are intentionally unsupport
 `updt` enables targets by OS profile.
 
 - macOS: Homebrew, npm, cargo, rustup
-- Windows: npm, cargo, rustup, scoop
-- Arch Linux: npm, cargo, rustup, paru, pacman, flatpak
-- Termux: pkg, npm, cargo
+- Windows: npm, cargo, rustup, fnm, scoop
+- Arch Linux: npm, cargo, rustup, fnm, paru, pacman, flatpak
+- Termux: pkg, npm, cargo, fnm
 - other systems: all targets disabled by policy
 
 ## Install

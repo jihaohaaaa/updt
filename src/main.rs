@@ -30,8 +30,8 @@ use std::time::Duration;
 
 type AppTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 
-const TARGET_IDS: [&str; 10] = [
-    "brew", "npm", "cargo", "nvim", "rustup", "scoop", "paru", "flatpak", "pacman", "pkg",
+const TARGET_IDS: [&str; 11] = [
+    "brew", "npm", "cargo", "nvim", "rustup", "fnm", "scoop", "paru", "flatpak", "pacman", "pkg",
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -68,6 +68,10 @@ struct AppState {
     rustup_has_updates: bool,
     rustup_check_failed: bool,
     rustup_updatable_toolchains: Vec<String>,
+    fnm_installed: bool,
+    fnm_has_updates: bool,
+    fnm_check_failed: bool,
+    fnm_updatable_versions: Vec<String>,
     scoop_installed: bool,
     scoop_has_updates: bool,
     scoop_check_failed: bool,
@@ -101,6 +105,7 @@ struct AppState {
     enable_npm: bool,
     enable_cargo: bool,
     enable_rustup: bool,
+    enable_fnm: bool,
     enable_scoop: bool,
     enable_paru: bool,
     enable_pacman: bool,
@@ -130,6 +135,10 @@ impl Default for AppState {
             rustup_has_updates: false,
             rustup_check_failed: false,
             rustup_updatable_toolchains: vec![],
+            fnm_installed: false,
+            fnm_has_updates: false,
+            fnm_check_failed: false,
+            fnm_updatable_versions: vec![],
             scoop_installed: false,
             scoop_has_updates: false,
             scoop_check_failed: false,
@@ -163,6 +172,7 @@ impl Default for AppState {
             enable_npm: false,
             enable_cargo: false,
             enable_rustup: false,
+            enable_fnm: false,
             enable_scoop: false,
             enable_paru: false,
             enable_pacman: false,
@@ -180,6 +190,7 @@ fn target_label(id: &str) -> &'static str {
         "cargo" => "cargo",
         "nvim" => "Neovim",
         "rustup" => "rustup",
+        "fnm" => "fnm",
         "scoop" => "scoop",
         "paru" => "paru",
         "flatpak" => "flatpak",
@@ -291,6 +302,7 @@ fn section_title(target: &str) -> &'static str {
         "cargo" => "cargo",
         "nvim" => "Neovim (Lazy/Mason)",
         "rustup" => "rustup",
+        "fnm" => "fnm (Node.js runtime)",
         "scoop" => "scoop",
         "paru" => "paru (AUR)",
         "flatpak" => "flatpak",
@@ -354,6 +366,17 @@ fn summarize_target_status(target: &str, state: &AppState) -> (MsgKind, &'static
             } else if state.rustup_check_failed {
                 (MsgKind::Warn, "检查失败")
             } else if state.rustup_has_updates {
+                (MsgKind::Warn, "发现可升级项")
+            } else {
+                (MsgKind::Ok, "当前最新")
+            }
+        }
+        "fnm" => {
+            if !state.enable_fnm || !state.fnm_installed {
+                (MsgKind::Warn, "已跳过")
+            } else if state.fnm_check_failed {
+                (MsgKind::Warn, "检查失败")
+            } else if state.fnm_has_updates {
                 (MsgKind::Warn, "发现可升级项")
             } else {
                 (MsgKind::Ok, "当前最新")
@@ -600,6 +623,7 @@ fn updatable_items_for_target(state: &AppState, target: &str) -> Vec<String> {
         "cargo" => state.cargo_updatable_packages.clone(),
         "nvim" => state.nvim_updatable_components.clone(),
         "rustup" => state.rustup_updatable_toolchains.clone(),
+        "fnm" => state.fnm_updatable_versions.clone(),
         "scoop" => state.scoop_updatable_packages.clone(),
         "paru" => state.paru_updatable_packages.clone(),
         "flatpak" => state.flatpak_updatable_refs.clone(),
@@ -897,7 +921,7 @@ fn install_fish_completion() -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::other("invalid completion path"))?;
     fs::create_dir_all(parent)?;
 
-    let script = r#"set -l __updt_targets brew npm cargo nvim rustup scoop paru flatpak pacman pkg
+    let script = r#"set -l __updt_targets brew npm cargo nvim rustup fnm scoop paru flatpak pacman pkg
 
 complete -c updt -f
 complete -c updt -s h -l help -d 'Print help'
@@ -922,12 +946,14 @@ fn parse_profile(state: &mut AppState) {
         state.enable_pkg = true;
         state.enable_npm = true;
         state.enable_cargo = true;
+        state.enable_fnm = true;
         state.enable_rustup = false;
     } else if env::consts::OS == "windows" {
         state.system_profile = SystemProfile::Windows;
         state.enable_npm = true;
         state.enable_cargo = true;
         state.enable_rustup = true;
+        state.enable_fnm = true;
         state.enable_scoop = true;
     } else if env::consts::OS == "macos" {
         state.system_profile = SystemProfile::Macos;
@@ -935,11 +961,13 @@ fn parse_profile(state: &mut AppState) {
         state.enable_npm = true;
         state.enable_cargo = true;
         state.enable_rustup = true;
+        state.enable_fnm = true;
     } else if state.is_arch_linux {
         state.system_profile = SystemProfile::Arch;
         state.enable_npm = true;
         state.enable_cargo = true;
         state.enable_rustup = true;
+        state.enable_fnm = true;
         state.enable_paru = true;
         state.enable_pacman = true;
         state.enable_flatpak = true;
@@ -963,6 +991,7 @@ fn target_enabled(state: &AppState, target: &str) -> bool {
         "cargo" => state.enable_cargo,
         "nvim" => state.enable_nvim,
         "rustup" => state.enable_rustup,
+        "fnm" => state.enable_fnm,
         "scoop" => state.enable_scoop,
         "paru" => state.enable_paru,
         "flatpak" => state.enable_flatpak,
@@ -999,6 +1028,15 @@ fn parse_cargo_list(output: &str) -> Result<Vec<String>, ()> {
         return Err(());
     }
     Ok(pkgs)
+}
+
+fn parse_fnm_version_token(line: &str) -> Option<String> {
+    let trimmed = line.trim().trim_start_matches('*').trim();
+    let token = trimmed.split_whitespace().next()?;
+    if token.starts_with('v') {
+        return Some(token.to_string());
+    }
+    None
 }
 
 struct CheckResult {
@@ -1289,6 +1327,133 @@ fn check_rustup_quiet(state: &mut AppState, logs: &mut Vec<String>) {
                 &format!("检查失败 (exit {status})."),
                 MsgKind::Warn,
             ));
+        }
+    }
+}
+
+fn check_fnm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
+    if !state.enable_fnm {
+        logs.push(log_pkg_line("fnm", "按系统策略跳过.", MsgKind::Warn));
+        return;
+    }
+    if !command_exists("fnm") {
+        logs.push(log_pkg_line("fnm", "未安装, 跳过.", MsgKind::Warn));
+        return;
+    }
+    state.fnm_installed = true;
+    logs.push(log_pkg_line(
+        "fnm",
+        "正在检查 Node.js 版本更新 (fnm list/list-remote)...",
+        MsgKind::Info,
+    ));
+
+    let Ok((list_status, list_output)) = run_capture("fnm", &["list"]) else {
+        state.fnm_check_failed = true;
+        logs.push(log_pkg_line(
+            "fnm",
+            "检查失败: 无法执行 fnm list.",
+            MsgKind::Warn,
+        ));
+        return;
+    };
+    if list_status != 0 {
+        state.fnm_check_failed = true;
+        logs.push(log_pkg_line(
+            "fnm",
+            &format!("检查失败 (fnm list, exit {list_status})."),
+            MsgKind::Warn,
+        ));
+        return;
+    }
+
+    let installed_versions = list_output
+        .lines()
+        .filter_map(parse_fnm_version_token)
+        .collect::<Vec<_>>();
+
+    let Ok((latest_status, latest_output)) = run_capture("fnm", &["list-remote", "--latest"])
+    else {
+        state.fnm_check_failed = true;
+        logs.push(log_pkg_line(
+            "fnm",
+            "检查失败: 无法获取 latest 远端版本.",
+            MsgKind::Warn,
+        ));
+        return;
+    };
+    if latest_status != 0 {
+        state.fnm_check_failed = true;
+        logs.push(log_pkg_line(
+            "fnm",
+            &format!("检查失败 (fnm list-remote --latest, exit {latest_status})."),
+            MsgKind::Warn,
+        ));
+        return;
+    }
+
+    let Ok((lts_status, lts_output)) = run_capture("fnm", &["list-remote", "--lts", "--latest"])
+    else {
+        state.fnm_check_failed = true;
+        logs.push(log_pkg_line(
+            "fnm",
+            "检查失败: 无法获取 LTS 远端版本.",
+            MsgKind::Warn,
+        ));
+        return;
+    };
+    if lts_status != 0 {
+        state.fnm_check_failed = true;
+        logs.push(log_pkg_line(
+            "fnm",
+            &format!("检查失败 (fnm list-remote --lts --latest, exit {lts_status})."),
+            MsgKind::Warn,
+        ));
+        return;
+    }
+
+    let latest = latest_output.lines().find_map(parse_fnm_version_token);
+    let lts = lts_output.lines().find_map(parse_fnm_version_token);
+    let Some(latest_version) = latest else {
+        state.fnm_check_failed = true;
+        logs.push(log_pkg_line(
+            "fnm",
+            "检查失败: latest 版本解析失败.",
+            MsgKind::Warn,
+        ));
+        return;
+    };
+    let Some(lts_version) = lts else {
+        state.fnm_check_failed = true;
+        logs.push(log_pkg_line(
+            "fnm",
+            "检查失败: LTS 版本解析失败.",
+            MsgKind::Warn,
+        ));
+        return;
+    };
+
+    if !installed_versions.iter().any(|v| v == &latest_version) {
+        state
+            .fnm_updatable_versions
+            .push(format!("latest -> {latest_version}"));
+    }
+    if !installed_versions.iter().any(|v| v == &lts_version) {
+        state
+            .fnm_updatable_versions
+            .push(format!("lts -> {lts_version}"));
+    }
+
+    if state.fnm_updatable_versions.is_empty() {
+        logs.push(log_pkg_line("fnm", "latest/LTS 已安装到最新.", MsgKind::Ok));
+    } else {
+        state.fnm_has_updates = true;
+        logs.push(log_pkg_line(
+            "fnm",
+            "以下 Node.js 版本可安装/更新:",
+            MsgKind::Info,
+        ));
+        for v in &state.fnm_updatable_versions {
+            logs.push(format!("  - {v}"));
         }
     }
 }
@@ -1798,6 +1963,7 @@ fn run_single_check(target: &str) -> CheckResult {
         "cargo" => check_cargo_quiet(&mut local, &mut logs),
         "nvim" => check_nvim_quiet(&mut local, &mut logs),
         "rustup" => check_rustup_quiet(&mut local, &mut logs),
+        "fnm" => check_fnm_quiet(&mut local, &mut logs),
         "scoop" => check_scoop_quiet(&mut local, &mut logs),
         "paru" => check_paru_quiet(&mut local, &mut logs),
         "flatpak" => check_flatpak_quiet(&mut local, &mut logs),
@@ -1847,6 +2013,12 @@ fn merge_check_result(state: &mut AppState, target: &str, local: AppState) {
             state.rustup_has_updates = local.rustup_has_updates;
             state.rustup_check_failed = local.rustup_check_failed;
             state.rustup_updatable_toolchains = local.rustup_updatable_toolchains;
+        }
+        "fnm" => {
+            state.fnm_installed = local.fnm_installed;
+            state.fnm_has_updates = local.fnm_has_updates;
+            state.fnm_check_failed = local.fnm_check_failed;
+            state.fnm_updatable_versions = local.fnm_updatable_versions;
         }
         "scoop" => {
             state.scoop_installed = local.scoop_installed;
@@ -2231,6 +2403,25 @@ fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
         }
     }
 
+    if selected.iter().any(|s| s == "fnm") {
+        println!("[fnm] 正在执行: fnm install --latest");
+        match run_inherit("fnm", &["install", "--latest"]) {
+            Ok(true) => println!("[fnm] latest Node.js 已安装/更新."),
+            _ => {
+                println!("[fnm] latest Node.js 更新失败.");
+                run_fail = true;
+            }
+        }
+        println!("[fnm] 正在执行: fnm install --lts");
+        match run_inherit("fnm", &["install", "--lts"]) {
+            Ok(true) => println!("[fnm] LTS Node.js 已安装/更新."),
+            _ => {
+                println!("[fnm] LTS Node.js 更新失败.");
+                run_fail = true;
+            }
+        }
+    }
+
     if selected.iter().any(|s| s == "scoop") {
         println!("[scoop] 正在执行: scoop update");
         match run_inherit("scoop", &["update"]) {
@@ -2369,6 +2560,9 @@ fn build_upgradable_targets(state: &AppState) -> Vec<String> {
     if state.rustup_has_updates {
         upgradable_targets.push("rustup".to_string());
     }
+    if state.fnm_has_updates {
+        upgradable_targets.push("fnm".to_string());
+    }
     if state.scoop_has_updates {
         upgradable_targets.push("scoop".to_string());
     }
@@ -2408,6 +2602,7 @@ fn any_check_failed(state: &AppState) -> bool {
         || state.cargo_check_failed
         || state.nvim_check_failed
         || state.rustup_check_failed
+        || state.fnm_check_failed
         || state.scoop_check_failed
         || state.paru_check_failed
         || state.flatpak_check_failed
