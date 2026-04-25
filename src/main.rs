@@ -34,8 +34,94 @@ const TARGET_IDS: [&str; 11] = [
     "brew", "npm", "cargo", "nvim", "rustup", "fnm", "scoop", "paru", "flatpak", "pacman", "pkg",
 ];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+struct TargetMeta {
+    id: &'static str,
+    label: &'static str,
+    section: &'static str,
+    update_summary: &'static str,
+}
+
+const TARGET_META: [TargetMeta; 11] = [
+    TargetMeta {
+        id: "brew",
+        label: "Homebrew",
+        section: "Homebrew",
+        update_summary: "发现可升级项",
+    },
+    TargetMeta {
+        id: "npm",
+        label: "npm",
+        section: "npm (global)",
+        update_summary: "发现可升级项",
+    },
+    TargetMeta {
+        id: "cargo",
+        label: "cargo",
+        section: "cargo",
+        update_summary: "发现可升级项",
+    },
+    TargetMeta {
+        id: "nvim",
+        label: "Neovim",
+        section: "Neovim (Lazy/Mason)",
+        update_summary: "可执行更新",
+    },
+    TargetMeta {
+        id: "rustup",
+        label: "rustup",
+        section: "rustup",
+        update_summary: "发现可升级项",
+    },
+    TargetMeta {
+        id: "fnm",
+        label: "fnm",
+        section: "fnm (Node.js runtime)",
+        update_summary: "发现可升级项",
+    },
+    TargetMeta {
+        id: "scoop",
+        label: "scoop",
+        section: "scoop",
+        update_summary: "发现可升级项",
+    },
+    TargetMeta {
+        id: "paru",
+        label: "paru",
+        section: "paru (AUR)",
+        update_summary: "发现可升级项",
+    },
+    TargetMeta {
+        id: "flatpak",
+        label: "flatpak",
+        section: "flatpak",
+        update_summary: "发现可升级项",
+    },
+    TargetMeta {
+        id: "pacman",
+        label: "pacman",
+        section: "pacman",
+        update_summary: "发现可升级项",
+    },
+    TargetMeta {
+        id: "pkg",
+        label: "pkg",
+        section: "pkg (Termux)",
+        update_summary: "发现可升级项",
+    },
+];
+
+#[derive(Clone, Copy)]
+struct TargetStateFlags {
+    enabled: bool,
+    installed: bool,
+    check_failed: bool,
+    has_updates: bool,
+    needs_cargo_updater: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum SystemProfile {
+    #[default]
     Unknown,
     Windows,
     Macos,
@@ -49,155 +135,78 @@ enum CliCommand {
     Fish,
 }
 
+#[derive(Default, Clone)]
+struct TargetBucketState {
+    installed: bool,
+    has_updates: bool,
+    check_failed: bool,
+    updatable_items: Vec<String>,
+}
+
+#[derive(Default, Clone)]
+struct BrewState {
+    installed: bool,
+    has_updates: bool,
+    check_failed: bool,
+    formula_list: Vec<String>,
+    cask_list: Vec<String>,
+}
+
+#[derive(Default, Clone)]
+struct CargoState {
+    installed: bool,
+    has_updates: bool,
+    check_failed: bool,
+    updater_installed: bool,
+    updatable_packages: Vec<String>,
+}
+
+#[derive(Default, Clone)]
+struct NvimState {
+    installed: bool,
+    has_updates: bool,
+    check_failed: bool,
+    lazy_available: bool,
+    mason_available: bool,
+    updatable_components: Vec<String>,
+}
+
+#[derive(Default, Clone)]
+struct EnablePolicy {
+    brew: bool,
+    npm: bool,
+    cargo: bool,
+    rustup: bool,
+    fnm: bool,
+    scoop: bool,
+    paru: bool,
+    pacman: bool,
+    flatpak: bool,
+    pkg: bool,
+    nvim: bool,
+}
+
+#[derive(Default, Clone)]
 struct AppState {
-    brew_installed: bool,
-    brew_has_updates: bool,
-    brew_check_failed: bool,
-    brew_formula_list: Vec<String>,
-    brew_cask_list: Vec<String>,
-    npm_installed: bool,
-    npm_has_updates: bool,
-    npm_check_failed: bool,
-    npm_updatable_packages: Vec<String>,
-    cargo_installed: bool,
-    cargo_has_updates: bool,
-    cargo_check_failed: bool,
-    cargo_updater_installed: bool,
-    cargo_updatable_packages: Vec<String>,
-    rustup_installed: bool,
-    rustup_has_updates: bool,
-    rustup_check_failed: bool,
-    rustup_updatable_toolchains: Vec<String>,
-    fnm_installed: bool,
-    fnm_has_updates: bool,
-    fnm_check_failed: bool,
-    fnm_updatable_versions: Vec<String>,
-    scoop_installed: bool,
-    scoop_has_updates: bool,
-    scoop_check_failed: bool,
-    scoop_updatable_packages: Vec<String>,
-    paru_installed: bool,
-    paru_has_updates: bool,
-    paru_check_failed: bool,
-    paru_updatable_packages: Vec<String>,
-    flatpak_installed: bool,
-    flatpak_has_updates: bool,
-    flatpak_check_failed: bool,
-    flatpak_updatable_refs: Vec<String>,
-    pacman_installed: bool,
-    pacman_has_updates: bool,
-    pacman_check_failed: bool,
-    pacman_updatable_packages: Vec<String>,
-    pkg_installed: bool,
-    pkg_has_updates: bool,
-    pkg_check_failed: bool,
-    pkg_updatable_packages: Vec<String>,
-    nvim_installed: bool,
-    nvim_has_updates: bool,
-    nvim_check_failed: bool,
-    nvim_lazy_available: bool,
-    nvim_mason_available: bool,
-    nvim_updatable_components: Vec<String>,
+    brew: BrewState,
+    npm: TargetBucketState,
+    cargo: CargoState,
+    rustup: TargetBucketState,
+    fnm: TargetBucketState,
+    scoop: TargetBucketState,
+    paru: TargetBucketState,
+    flatpak: TargetBucketState,
+    pacman: TargetBucketState,
+    pkg: TargetBucketState,
+    nvim: NvimState,
     is_arch_linux: bool,
     is_termux: bool,
     system_profile: SystemProfile,
-    enable_brew: bool,
-    enable_npm: bool,
-    enable_cargo: bool,
-    enable_rustup: bool,
-    enable_fnm: bool,
-    enable_scoop: bool,
-    enable_paru: bool,
-    enable_pacman: bool,
-    enable_flatpak: bool,
-    enable_pkg: bool,
-    enable_nvim: bool,
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self {
-            brew_installed: false,
-            brew_has_updates: false,
-            brew_check_failed: false,
-            brew_formula_list: vec![],
-            brew_cask_list: vec![],
-            npm_installed: false,
-            npm_has_updates: false,
-            npm_check_failed: false,
-            npm_updatable_packages: vec![],
-            cargo_installed: false,
-            cargo_has_updates: false,
-            cargo_check_failed: false,
-            cargo_updater_installed: false,
-            cargo_updatable_packages: vec![],
-            rustup_installed: false,
-            rustup_has_updates: false,
-            rustup_check_failed: false,
-            rustup_updatable_toolchains: vec![],
-            fnm_installed: false,
-            fnm_has_updates: false,
-            fnm_check_failed: false,
-            fnm_updatable_versions: vec![],
-            scoop_installed: false,
-            scoop_has_updates: false,
-            scoop_check_failed: false,
-            scoop_updatable_packages: vec![],
-            paru_installed: false,
-            paru_has_updates: false,
-            paru_check_failed: false,
-            paru_updatable_packages: vec![],
-            flatpak_installed: false,
-            flatpak_has_updates: false,
-            flatpak_check_failed: false,
-            flatpak_updatable_refs: vec![],
-            pacman_installed: false,
-            pacman_has_updates: false,
-            pacman_check_failed: false,
-            pacman_updatable_packages: vec![],
-            pkg_installed: false,
-            pkg_has_updates: false,
-            pkg_check_failed: false,
-            pkg_updatable_packages: vec![],
-            nvim_installed: false,
-            nvim_has_updates: false,
-            nvim_check_failed: false,
-            nvim_lazy_available: false,
-            nvim_mason_available: false,
-            nvim_updatable_components: vec![],
-            is_arch_linux: false,
-            is_termux: false,
-            system_profile: SystemProfile::Unknown,
-            enable_brew: false,
-            enable_npm: false,
-            enable_cargo: false,
-            enable_rustup: false,
-            enable_fnm: false,
-            enable_scoop: false,
-            enable_paru: false,
-            enable_pacman: false,
-            enable_flatpak: false,
-            enable_pkg: false,
-            enable_nvim: false,
-        }
-    }
+    enable: EnablePolicy,
 }
 
 fn target_label(id: &str) -> &'static str {
-    match id {
-        "brew" => "Homebrew",
-        "npm" => "npm",
-        "cargo" => "cargo",
-        "nvim" => "Neovim",
-        "rustup" => "rustup",
-        "fnm" => "fnm",
-        "scoop" => "scoop",
-        "paru" => "paru",
-        "flatpak" => "flatpak",
-        "pacman" => "pacman",
-        "pkg" => "pkg",
-        _ => "unknown",
-    }
+    target_meta(id).map(|m| m.label).unwrap_or("unknown")
 }
 
 fn parse_cli() -> CliCommand {
@@ -296,148 +305,115 @@ fn log_pkg_line(pkg: &str, msg: &str, kind: MsgKind) -> String {
 }
 
 fn section_title(target: &str) -> &'static str {
+    target_meta(target).map(|m| m.section).unwrap_or("unknown")
+}
+
+fn target_meta(id: &str) -> Option<&'static TargetMeta> {
+    TARGET_META.iter().find(|meta| meta.id == id)
+}
+
+fn target_state_flags(state: &AppState, target: &str) -> Option<TargetStateFlags> {
     match target {
-        "brew" => "Homebrew",
-        "npm" => "npm (global)",
-        "cargo" => "cargo",
-        "nvim" => "Neovim (Lazy/Mason)",
-        "rustup" => "rustup",
-        "fnm" => "fnm (Node.js runtime)",
-        "scoop" => "scoop",
-        "paru" => "paru (AUR)",
-        "flatpak" => "flatpak",
-        "pacman" => "pacman",
-        "pkg" => "pkg (Termux)",
-        _ => "unknown",
+        "brew" => Some(TargetStateFlags {
+            enabled: state.enable.brew,
+            installed: state.brew.installed,
+            check_failed: state.brew.check_failed,
+            has_updates: state.brew.has_updates,
+            needs_cargo_updater: false,
+        }),
+        "npm" => Some(TargetStateFlags {
+            enabled: state.enable.npm,
+            installed: state.npm.installed,
+            check_failed: state.npm.check_failed,
+            has_updates: state.npm.has_updates,
+            needs_cargo_updater: false,
+        }),
+        "cargo" => Some(TargetStateFlags {
+            enabled: state.enable.cargo,
+            installed: state.cargo.installed,
+            check_failed: state.cargo.check_failed,
+            has_updates: state.cargo.has_updates,
+            needs_cargo_updater: !state.cargo.updater_installed,
+        }),
+        "nvim" => Some(TargetStateFlags {
+            enabled: state.enable.nvim,
+            installed: state.nvim.installed,
+            check_failed: state.nvim.check_failed,
+            has_updates: state.nvim.has_updates,
+            needs_cargo_updater: false,
+        }),
+        "rustup" => Some(TargetStateFlags {
+            enabled: state.enable.rustup,
+            installed: state.rustup.installed,
+            check_failed: state.rustup.check_failed,
+            has_updates: state.rustup.has_updates,
+            needs_cargo_updater: false,
+        }),
+        "fnm" => Some(TargetStateFlags {
+            enabled: state.enable.fnm,
+            installed: state.fnm.installed,
+            check_failed: state.fnm.check_failed,
+            has_updates: state.fnm.has_updates,
+            needs_cargo_updater: false,
+        }),
+        "scoop" => Some(TargetStateFlags {
+            enabled: state.enable.scoop,
+            installed: state.scoop.installed,
+            check_failed: state.scoop.check_failed,
+            has_updates: state.scoop.has_updates,
+            needs_cargo_updater: false,
+        }),
+        "paru" => Some(TargetStateFlags {
+            enabled: state.enable.paru,
+            installed: state.paru.installed,
+            check_failed: state.paru.check_failed,
+            has_updates: state.paru.has_updates,
+            needs_cargo_updater: false,
+        }),
+        "flatpak" => Some(TargetStateFlags {
+            enabled: state.enable.flatpak,
+            installed: state.flatpak.installed,
+            check_failed: state.flatpak.check_failed,
+            has_updates: state.flatpak.has_updates,
+            needs_cargo_updater: false,
+        }),
+        "pacman" => Some(TargetStateFlags {
+            enabled: state.enable.pacman,
+            installed: state.pacman.installed,
+            check_failed: state.pacman.check_failed,
+            has_updates: state.pacman.has_updates,
+            needs_cargo_updater: false,
+        }),
+        "pkg" => Some(TargetStateFlags {
+            enabled: state.enable.pkg,
+            installed: state.pkg.installed,
+            check_failed: state.pkg.check_failed,
+            has_updates: state.pkg.has_updates,
+            needs_cargo_updater: false,
+        }),
+        _ => None,
     }
 }
 
 fn summarize_target_status(target: &str, state: &AppState) -> (MsgKind, &'static str) {
-    match target {
-        "brew" => {
-            if !state.enable_brew || !state.brew_installed {
-                (MsgKind::Warn, "已跳过")
-            } else if state.brew_check_failed {
-                (MsgKind::Warn, "检查失败")
-            } else if state.brew_has_updates {
-                (MsgKind::Warn, "发现可升级项")
-            } else {
-                (MsgKind::Ok, "当前最新")
-            }
-        }
-        "npm" => {
-            if !state.enable_npm || !state.npm_installed {
-                (MsgKind::Warn, "已跳过")
-            } else if state.npm_check_failed {
-                (MsgKind::Warn, "检查失败")
-            } else if state.npm_has_updates {
-                (MsgKind::Warn, "发现可升级项")
-            } else {
-                (MsgKind::Ok, "当前最新")
-            }
-        }
-        "cargo" => {
-            if !state.enable_cargo || !state.cargo_installed {
-                (MsgKind::Warn, "已跳过")
-            } else if !state.cargo_updater_installed {
-                (MsgKind::Warn, "缺少 cargo-update")
-            } else if state.cargo_check_failed {
-                (MsgKind::Warn, "检查失败")
-            } else if state.cargo_has_updates {
-                (MsgKind::Warn, "发现可升级项")
-            } else {
-                (MsgKind::Ok, "当前最新")
-            }
-        }
-        "nvim" => {
-            if !state.enable_nvim || !state.nvim_installed {
-                (MsgKind::Warn, "已跳过")
-            } else if state.nvim_check_failed {
-                (MsgKind::Warn, "检查失败")
-            } else if state.nvim_has_updates {
-                (MsgKind::Warn, "可执行更新")
-            } else {
-                (MsgKind::Ok, "当前最新")
-            }
-        }
-        "rustup" => {
-            if !state.enable_rustup || !state.rustup_installed {
-                (MsgKind::Warn, "已跳过")
-            } else if state.rustup_check_failed {
-                (MsgKind::Warn, "检查失败")
-            } else if state.rustup_has_updates {
-                (MsgKind::Warn, "发现可升级项")
-            } else {
-                (MsgKind::Ok, "当前最新")
-            }
-        }
-        "fnm" => {
-            if !state.enable_fnm || !state.fnm_installed {
-                (MsgKind::Warn, "已跳过")
-            } else if state.fnm_check_failed {
-                (MsgKind::Warn, "检查失败")
-            } else if state.fnm_has_updates {
-                (MsgKind::Warn, "发现可升级项")
-            } else {
-                (MsgKind::Ok, "当前最新")
-            }
-        }
-        "scoop" => {
-            if !state.enable_scoop || !state.scoop_installed {
-                (MsgKind::Warn, "已跳过")
-            } else if state.scoop_check_failed {
-                (MsgKind::Warn, "检查失败")
-            } else if state.scoop_has_updates {
-                (MsgKind::Warn, "发现可升级项")
-            } else {
-                (MsgKind::Ok, "当前最新")
-            }
-        }
-        "paru" => {
-            if !state.enable_paru || !state.paru_installed {
-                (MsgKind::Warn, "已跳过")
-            } else if state.paru_check_failed {
-                (MsgKind::Warn, "检查失败")
-            } else if state.paru_has_updates {
-                (MsgKind::Warn, "发现可升级项")
-            } else {
-                (MsgKind::Ok, "当前最新")
-            }
-        }
-        "flatpak" => {
-            if !state.enable_flatpak || !state.flatpak_installed {
-                (MsgKind::Warn, "已跳过")
-            } else if state.flatpak_check_failed {
-                (MsgKind::Warn, "检查失败")
-            } else if state.flatpak_has_updates {
-                (MsgKind::Warn, "发现可升级项")
-            } else {
-                (MsgKind::Ok, "当前最新")
-            }
-        }
-        "pacman" => {
-            if !state.enable_pacman || !state.pacman_installed {
-                (MsgKind::Warn, "已跳过")
-            } else if state.pacman_check_failed {
-                (MsgKind::Warn, "检查失败")
-            } else if state.pacman_has_updates {
-                (MsgKind::Warn, "发现可升级项")
-            } else {
-                (MsgKind::Ok, "当前最新")
-            }
-        }
-        "pkg" => {
-            if !state.enable_pkg || !state.pkg_installed {
-                (MsgKind::Warn, "已跳过")
-            } else if state.pkg_check_failed {
-                (MsgKind::Warn, "检查失败")
-            } else if state.pkg_has_updates {
-                (MsgKind::Warn, "发现可升级项")
-            } else {
-                (MsgKind::Ok, "当前最新")
-            }
-        }
-        _ => (MsgKind::Warn, "未知状态"),
+    let Some(flags) = target_state_flags(state, target) else {
+        return (MsgKind::Warn, "未知状态");
+    };
+    if !flags.enabled || !flags.installed {
+        (MsgKind::Warn, "已跳过")
+    } else if flags.needs_cargo_updater {
+        (MsgKind::Warn, "缺少 cargo-update")
+    } else if flags.check_failed {
+        (MsgKind::Warn, "检查失败")
+    } else if flags.has_updates {
+        (
+            MsgKind::Warn,
+            target_meta(target)
+                .map(|m| m.update_summary)
+                .unwrap_or("发现可升级项"),
+        )
+    } else {
+        (MsgKind::Ok, "当前最新")
     }
 }
 
@@ -614,21 +590,22 @@ fn first_token(line: &str) -> Option<String> {
 fn updatable_items_for_target(state: &AppState, target: &str) -> Vec<String> {
     match target {
         "brew" => state
-            .brew_formula_list
+            .brew
+            .formula_list
             .iter()
-            .chain(state.brew_cask_list.iter())
+            .chain(state.brew.cask_list.iter())
             .cloned()
             .collect(),
-        "npm" => state.npm_updatable_packages.clone(),
-        "cargo" => state.cargo_updatable_packages.clone(),
-        "nvim" => state.nvim_updatable_components.clone(),
-        "rustup" => state.rustup_updatable_toolchains.clone(),
-        "fnm" => state.fnm_updatable_versions.clone(),
-        "scoop" => state.scoop_updatable_packages.clone(),
-        "paru" => state.paru_updatable_packages.clone(),
-        "flatpak" => state.flatpak_updatable_refs.clone(),
-        "pacman" => state.pacman_updatable_packages.clone(),
-        "pkg" => state.pkg_updatable_packages.clone(),
+        "npm" => state.npm.updatable_items.clone(),
+        "cargo" => state.cargo.updatable_packages.clone(),
+        "nvim" => state.nvim.updatable_components.clone(),
+        "rustup" => state.rustup.updatable_items.clone(),
+        "fnm" => state.fnm.updatable_items.clone(),
+        "scoop" => state.scoop.updatable_items.clone(),
+        "paru" => state.paru.updatable_items.clone(),
+        "flatpak" => state.flatpak.updatable_items.clone(),
+        "pacman" => state.pacman.updatable_items.clone(),
+        "pkg" => state.pkg.updatable_items.clone(),
         _ => Vec::new(),
     }
 }
@@ -921,15 +898,16 @@ fn install_fish_completion() -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::other("invalid completion path"))?;
     fs::create_dir_all(parent)?;
 
-    let script = r#"set -l __updt_targets brew npm cargo nvim rustup fnm scoop paru flatpak pacman pkg
-
-complete -c updt -f
-complete -c updt -s h -l help -d 'Print help'
-complete -c updt -s V -l version -d 'Print version'
-complete -c updt -n '__fish_use_subcommand' -a 'update fish'
-complete -c updt -n '__fish_seen_subcommand_from update' -x -a "$__updt_targets"
-complete -c updt -n '__fish_seen_subcommand_from update' -s h -l help -d 'Print help'
-"#;
+    let targets = TARGET_IDS.join(" ");
+    let script = format!(
+        "set -l __updt_targets {targets}\n\n\
+complete -c updt -f\n\
+complete -c updt -s h -l help -d 'Print help'\n\
+complete -c updt -s V -l version -d 'Print version'\n\
+complete -c updt -n '__fish_use_subcommand' -a 'update fish'\n\
+complete -c updt -n '__fish_seen_subcommand_from update' -x -a \"$__updt_targets\"\n\
+complete -c updt -n '__fish_seen_subcommand_from update' -s h -l help -d 'Print help'\n"
+    );
 
     fs::write(&path, script)?;
     Ok(path)
@@ -937,40 +915,40 @@ complete -c updt -n '__fish_seen_subcommand_from update' -s h -l help -d 'Print 
 
 fn parse_profile(state: &mut AppState) {
     let prefix = env::var("PREFIX").unwrap_or_default();
-    state.enable_nvim = true;
+    state.enable.nvim = true;
     state.is_termux = prefix.contains("com.termux")
         || Path::new("/data/data/com.termux/files/usr/bin/pkg").exists();
     state.is_arch_linux = PathBuf::from("/etc/arch-release").is_file();
     if state.is_termux {
         state.system_profile = SystemProfile::Termux;
-        state.enable_pkg = true;
-        state.enable_npm = true;
-        state.enable_cargo = true;
-        state.enable_fnm = true;
-        state.enable_rustup = false;
+        state.enable.pkg = true;
+        state.enable.npm = true;
+        state.enable.cargo = true;
+        state.enable.fnm = true;
+        state.enable.rustup = false;
     } else if env::consts::OS == "windows" {
         state.system_profile = SystemProfile::Windows;
-        state.enable_npm = true;
-        state.enable_cargo = true;
-        state.enable_rustup = true;
-        state.enable_fnm = true;
-        state.enable_scoop = true;
+        state.enable.npm = true;
+        state.enable.cargo = true;
+        state.enable.rustup = true;
+        state.enable.fnm = true;
+        state.enable.scoop = true;
     } else if env::consts::OS == "macos" {
         state.system_profile = SystemProfile::Macos;
-        state.enable_brew = true;
-        state.enable_npm = true;
-        state.enable_cargo = true;
-        state.enable_rustup = true;
-        state.enable_fnm = true;
+        state.enable.brew = true;
+        state.enable.npm = true;
+        state.enable.cargo = true;
+        state.enable.rustup = true;
+        state.enable.fnm = true;
     } else if state.is_arch_linux {
         state.system_profile = SystemProfile::Arch;
-        state.enable_npm = true;
-        state.enable_cargo = true;
-        state.enable_rustup = true;
-        state.enable_fnm = true;
-        state.enable_paru = true;
-        state.enable_pacman = true;
-        state.enable_flatpak = true;
+        state.enable.npm = true;
+        state.enable.cargo = true;
+        state.enable.rustup = true;
+        state.enable.fnm = true;
+        state.enable.paru = true;
+        state.enable.pacman = true;
+        state.enable.flatpak = true;
     }
 }
 
@@ -985,20 +963,9 @@ fn profile_name(profile: SystemProfile) -> &'static str {
 }
 
 fn target_enabled(state: &AppState, target: &str) -> bool {
-    match target {
-        "brew" => state.enable_brew,
-        "npm" => state.enable_npm,
-        "cargo" => state.enable_cargo,
-        "nvim" => state.enable_nvim,
-        "rustup" => state.enable_rustup,
-        "fnm" => state.enable_fnm,
-        "scoop" => state.enable_scoop,
-        "paru" => state.enable_paru,
-        "flatpak" => state.enable_flatpak,
-        "pacman" => state.enable_pacman,
-        "pkg" => state.enable_pkg,
-        _ => false,
-    }
+    target_state_flags(state, target)
+        .map(|flags| flags.enabled)
+        .unwrap_or(false)
 }
 
 fn parse_cargo_list(output: &str) -> Result<Vec<String>, ()> {
@@ -1061,8 +1028,27 @@ enum CheckEvent {
     },
 }
 
+type CheckRunner = fn(&mut AppState, &mut Vec<String>);
+
+fn check_runner_for_target(target: &str) -> Option<CheckRunner> {
+    match target {
+        "brew" => Some(check_brew_quiet),
+        "npm" => Some(check_npm_quiet),
+        "cargo" => Some(check_cargo_quiet),
+        "nvim" => Some(check_nvim_quiet),
+        "rustup" => Some(check_rustup_quiet),
+        "fnm" => Some(check_fnm_quiet),
+        "scoop" => Some(check_scoop_quiet),
+        "paru" => Some(check_paru_quiet),
+        "flatpak" => Some(check_flatpak_quiet),
+        "pacman" => Some(check_pacman_quiet),
+        "pkg" => Some(check_pkg_quiet),
+        _ => None,
+    }
+}
+
 fn check_brew_quiet(state: &mut AppState, logs: &mut Vec<String>) {
-    if !state.enable_brew {
+    if !state.enable.brew {
         logs.push(log_pkg_line("brew", "按系统策略跳过.", MsgKind::Warn));
         return;
     }
@@ -1070,14 +1056,14 @@ fn check_brew_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         logs.push(log_pkg_line("brew", "未安装, 跳过.", MsgKind::Warn));
         return;
     }
-    state.brew_installed = true;
+    state.brew.installed = true;
     logs.push(log_pkg_line(
         "brew",
         "正在检查可升级项 (brew outdated --greedy --json=v2)...",
         MsgKind::Info,
     ));
     let Ok((status, output)) = run_capture("brew", &["outdated", "--greedy", "--json=v2"]) else {
-        state.brew_check_failed = true;
+        state.brew.check_failed = true;
         logs.push(log_pkg_line(
             "brew",
             "检查失败: 无法执行 brew 命令.",
@@ -1086,7 +1072,7 @@ fn check_brew_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     };
     if status != 0 {
-        state.brew_check_failed = true;
+        state.brew.check_failed = true;
         logs.push(log_pkg_line(
             "brew",
             &format!("检查失败 (brew outdated --greedy --json=v2, exit {status})."),
@@ -1095,7 +1081,7 @@ fn check_brew_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     }
     let Some(json_text) = first_json_payload(&output) else {
-        state.brew_check_failed = true;
+        state.brew.check_failed = true;
         logs.push(log_pkg_line(
             "brew",
             "检查失败: 未找到 JSON 内容.",
@@ -1104,7 +1090,7 @@ fn check_brew_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     };
     let Ok(root) = serde_json::from_str::<Value>(json_text) else {
-        state.brew_check_failed = true;
+        state.brew.check_failed = true;
         logs.push(log_pkg_line(
             "brew",
             "检查失败: JSON 解析失败.",
@@ -1112,7 +1098,7 @@ fn check_brew_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         ));
         return;
     };
-    state.brew_formula_list = root
+    state.brew.formula_list = root
         .get("formulae")
         .and_then(Value::as_array)
         .into_iter()
@@ -1120,7 +1106,7 @@ fn check_brew_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         .filter_map(|item| item.get("name").and_then(Value::as_str))
         .map(ToOwned::to_owned)
         .collect();
-    state.brew_cask_list = root
+    state.brew.cask_list = root
         .get("casks")
         .and_then(Value::as_array)
         .into_iter()
@@ -1128,28 +1114,28 @@ fn check_brew_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         .filter_map(|item| item.get("name").and_then(Value::as_str))
         .map(ToOwned::to_owned)
         .collect();
-    if state.brew_formula_list.is_empty() {
+    if state.brew.formula_list.is_empty() {
         logs.push(log_pkg_line("brew", "Formula: 已是最新.", MsgKind::Ok));
     } else {
-        state.brew_has_updates = true;
+        state.brew.has_updates = true;
         logs.push(log_pkg_line("brew", "Formula 可升级:", MsgKind::Info));
-        for p in &state.brew_formula_list {
+        for p in &state.brew.formula_list {
             logs.push(format!("  - {p}"));
         }
     }
-    if state.brew_cask_list.is_empty() {
+    if state.brew.cask_list.is_empty() {
         logs.push(log_pkg_line("brew", "Cask: 已是最新.", MsgKind::Ok));
     } else {
-        state.brew_has_updates = true;
+        state.brew.has_updates = true;
         logs.push(log_pkg_line("brew", "Cask 可升级:", MsgKind::Info));
-        for p in &state.brew_cask_list {
+        for p in &state.brew.cask_list {
             logs.push(format!("  - {p}"));
         }
     }
 }
 
 fn check_npm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
-    if !state.enable_npm {
+    if !state.enable.npm {
         logs.push(log_pkg_line("npm", "按系统策略跳过.", MsgKind::Warn));
         return;
     }
@@ -1157,14 +1143,14 @@ fn check_npm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         logs.push(log_pkg_line("npm", "未安装, 跳过.", MsgKind::Warn));
         return;
     }
-    state.npm_installed = true;
+    state.npm.installed = true;
     logs.push(log_pkg_line(
         "npm",
         "正在检查全局包更新 (npm outdated --json --global)...",
         MsgKind::Info,
     ));
     let Ok((status, output)) = run_capture("npm", &["outdated", "--json", "--global"]) else {
-        state.npm_check_failed = true;
+        state.npm.check_failed = true;
         logs.push(log_pkg_line(
             "npm",
             "检查失败: 无法执行 npm 命令.",
@@ -1177,7 +1163,7 @@ fn check_npm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     }
     if status != 1 {
-        state.npm_check_failed = true;
+        state.npm.check_failed = true;
         logs.push(log_pkg_line(
             "npm",
             &format!("检查失败 (exit {status})."),
@@ -1186,7 +1172,7 @@ fn check_npm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     }
     let Some(json_text) = first_json_payload(&output) else {
-        state.npm_check_failed = true;
+        state.npm.check_failed = true;
         logs.push(log_pkg_line(
             "npm",
             "检查失败: JSON 解析失败.",
@@ -1195,7 +1181,7 @@ fn check_npm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     };
     let Ok(root) = serde_json::from_str::<Value>(json_text) else {
-        state.npm_check_failed = true;
+        state.npm.check_failed = true;
         logs.push(log_pkg_line(
             "npm",
             "检查失败: JSON 解析失败.",
@@ -1211,16 +1197,16 @@ fn check_npm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         logs.push(log_pkg_line("npm", "全局包已是最新.", MsgKind::Ok));
         return;
     }
-    state.npm_has_updates = true;
-    state.npm_updatable_packages = obj.keys().cloned().collect();
+    state.npm.has_updates = true;
+    state.npm.updatable_items = obj.keys().cloned().collect();
     logs.push(log_pkg_line("npm", "以下全局包可升级:", MsgKind::Info));
-    for name in &state.npm_updatable_packages {
+    for name in &state.npm.updatable_items {
         logs.push(format!("  - {name}"));
     }
 }
 
 fn check_cargo_quiet(state: &mut AppState, logs: &mut Vec<String>) {
-    if !state.enable_cargo {
+    if !state.enable.cargo {
         logs.push(log_pkg_line("cargo", "按系统策略跳过.", MsgKind::Warn));
         return;
     }
@@ -1228,7 +1214,7 @@ fn check_cargo_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         logs.push(log_pkg_line("cargo", "未安装, 跳过.", MsgKind::Warn));
         return;
     }
-    state.cargo_installed = true;
+    state.cargo.installed = true;
     if !command_exists("cargo-install-update") {
         logs.push(log_pkg_line(
             "cargo",
@@ -1237,14 +1223,14 @@ fn check_cargo_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         ));
         return;
     }
-    state.cargo_updater_installed = true;
+    state.cargo.updater_installed = true;
     logs.push(log_pkg_line(
         "cargo",
         "正在检查已安装 crate 更新 (cargo install-update --list)...",
         MsgKind::Info,
     ));
     let Ok((status, output)) = run_cargo_install_update_capture(&["--list"]) else {
-        state.cargo_check_failed = true;
+        state.cargo.check_failed = true;
         logs.push(log_pkg_line(
             "cargo",
             "检查失败: 命令执行失败.",
@@ -1253,7 +1239,7 @@ fn check_cargo_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     };
     if status != 0 {
-        state.cargo_check_failed = true;
+        state.cargo.check_failed = true;
         logs.push(log_pkg_line(
             "cargo",
             &format!("检查失败 (exit {status})."),
@@ -1262,7 +1248,7 @@ fn check_cargo_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     }
     let Ok(pkgs) = parse_cargo_list(&output) else {
-        state.cargo_check_failed = true;
+        state.cargo.check_failed = true;
         logs.push(log_pkg_line(
             "cargo",
             "检查失败: 输出解析失败.",
@@ -1270,20 +1256,20 @@ fn check_cargo_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         ));
         return;
     };
-    state.cargo_updatable_packages = pkgs;
-    if state.cargo_updatable_packages.is_empty() {
+    state.cargo.updatable_packages = pkgs;
+    if state.cargo.updatable_packages.is_empty() {
         logs.push(log_pkg_line("cargo", "已安装 crate 已是最新.", MsgKind::Ok));
     } else {
-        state.cargo_has_updates = true;
+        state.cargo.has_updates = true;
         logs.push(log_pkg_line("cargo", "以下 crate 可升级:", MsgKind::Info));
-        for p in &state.cargo_updatable_packages {
+        for p in &state.cargo.updatable_packages {
             logs.push(format!("  - {p}"));
         }
     }
 }
 
 fn check_rustup_quiet(state: &mut AppState, logs: &mut Vec<String>) {
-    if !state.enable_rustup {
+    if !state.enable.rustup {
         logs.push(log_pkg_line("rustup", "按系统策略跳过.", MsgKind::Warn));
         return;
     }
@@ -1291,14 +1277,14 @@ fn check_rustup_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         logs.push(log_pkg_line("rustup", "未安装, 跳过.", MsgKind::Warn));
         return;
     }
-    state.rustup_installed = true;
+    state.rustup.installed = true;
     logs.push(log_pkg_line(
         "rustup",
         "正在检查 toolchain 更新 (rustup check --no-self-update)...",
         MsgKind::Info,
     ));
     let Ok((status, output)) = run_capture("rustup", &["check", "--no-self-update"]) else {
-        state.rustup_check_failed = true;
+        state.rustup.check_failed = true;
         logs.push(log_pkg_line(
             "rustup",
             "检查失败: 无法执行 rustup 命令.",
@@ -1309,19 +1295,19 @@ fn check_rustup_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     match status {
         0 => logs.push(log_pkg_line("rustup", "toolchain 已是最新.", MsgKind::Ok)),
         100 => {
-            state.rustup_has_updates = true;
+            state.rustup.has_updates = true;
             logs.push(log_pkg_line(
                 "rustup",
                 "以下 toolchain 可升级:",
                 MsgKind::Info,
             ));
             for line in output.lines().map(str::trim).filter(|x| !x.is_empty()) {
-                state.rustup_updatable_toolchains.push(line.to_string());
+                state.rustup.updatable_items.push(line.to_string());
                 logs.push(format!("  - {line}"));
             }
         }
         _ => {
-            state.rustup_check_failed = true;
+            state.rustup.check_failed = true;
             logs.push(log_pkg_line(
                 "rustup",
                 &format!("检查失败 (exit {status})."),
@@ -1332,7 +1318,7 @@ fn check_rustup_quiet(state: &mut AppState, logs: &mut Vec<String>) {
 }
 
 fn check_fnm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
-    if !state.enable_fnm {
+    if !state.enable.fnm {
         logs.push(log_pkg_line("fnm", "按系统策略跳过.", MsgKind::Warn));
         return;
     }
@@ -1340,7 +1326,7 @@ fn check_fnm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         logs.push(log_pkg_line("fnm", "未安装, 跳过.", MsgKind::Warn));
         return;
     }
-    state.fnm_installed = true;
+    state.fnm.installed = true;
     logs.push(log_pkg_line(
         "fnm",
         "正在检查 Node.js 版本更新 (fnm list/list-remote)...",
@@ -1348,7 +1334,7 @@ fn check_fnm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     ));
 
     let Ok((list_status, list_output)) = run_capture("fnm", &["list"]) else {
-        state.fnm_check_failed = true;
+        state.fnm.check_failed = true;
         logs.push(log_pkg_line(
             "fnm",
             "检查失败: 无法执行 fnm list.",
@@ -1357,7 +1343,7 @@ fn check_fnm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     };
     if list_status != 0 {
-        state.fnm_check_failed = true;
+        state.fnm.check_failed = true;
         logs.push(log_pkg_line(
             "fnm",
             &format!("检查失败 (fnm list, exit {list_status})."),
@@ -1373,7 +1359,7 @@ fn check_fnm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
 
     let Ok((latest_status, latest_output)) = run_capture("fnm", &["list-remote", "--latest"])
     else {
-        state.fnm_check_failed = true;
+        state.fnm.check_failed = true;
         logs.push(log_pkg_line(
             "fnm",
             "检查失败: 无法获取 latest 远端版本.",
@@ -1382,7 +1368,7 @@ fn check_fnm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     };
     if latest_status != 0 {
-        state.fnm_check_failed = true;
+        state.fnm.check_failed = true;
         logs.push(log_pkg_line(
             "fnm",
             &format!("检查失败 (fnm list-remote --latest, exit {latest_status})."),
@@ -1393,7 +1379,7 @@ fn check_fnm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
 
     let Ok((lts_status, lts_output)) = run_capture("fnm", &["list-remote", "--lts", "--latest"])
     else {
-        state.fnm_check_failed = true;
+        state.fnm.check_failed = true;
         logs.push(log_pkg_line(
             "fnm",
             "检查失败: 无法获取 LTS 远端版本.",
@@ -1402,7 +1388,7 @@ fn check_fnm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     };
     if lts_status != 0 {
-        state.fnm_check_failed = true;
+        state.fnm.check_failed = true;
         logs.push(log_pkg_line(
             "fnm",
             &format!("检查失败 (fnm list-remote --lts --latest, exit {lts_status})."),
@@ -1414,7 +1400,7 @@ fn check_fnm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     let latest = latest_output.lines().find_map(parse_fnm_version_token);
     let lts = lts_output.lines().find_map(parse_fnm_version_token);
     let Some(latest_version) = latest else {
-        state.fnm_check_failed = true;
+        state.fnm.check_failed = true;
         logs.push(log_pkg_line(
             "fnm",
             "检查失败: latest 版本解析失败.",
@@ -1423,7 +1409,7 @@ fn check_fnm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     };
     let Some(lts_version) = lts else {
-        state.fnm_check_failed = true;
+        state.fnm.check_failed = true;
         logs.push(log_pkg_line(
             "fnm",
             "检查失败: LTS 版本解析失败.",
@@ -1434,32 +1420,34 @@ fn check_fnm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
 
     if !installed_versions.iter().any(|v| v == &latest_version) {
         state
-            .fnm_updatable_versions
+            .fnm
+            .updatable_items
             .push(format!("latest -> {latest_version}"));
     }
     if !installed_versions.iter().any(|v| v == &lts_version) {
         state
-            .fnm_updatable_versions
+            .fnm
+            .updatable_items
             .push(format!("lts -> {lts_version}"));
     }
 
-    if state.fnm_updatable_versions.is_empty() {
+    if state.fnm.updatable_items.is_empty() {
         logs.push(log_pkg_line("fnm", "latest/LTS 已安装到最新.", MsgKind::Ok));
     } else {
-        state.fnm_has_updates = true;
+        state.fnm.has_updates = true;
         logs.push(log_pkg_line(
             "fnm",
             "以下 Node.js 版本可安装/更新:",
             MsgKind::Info,
         ));
-        for v in &state.fnm_updatable_versions {
+        for v in &state.fnm.updatable_items {
             logs.push(format!("  - {v}"));
         }
     }
 }
 
 fn check_scoop_quiet(state: &mut AppState, logs: &mut Vec<String>) {
-    if !state.enable_scoop {
+    if !state.enable.scoop {
         logs.push(log_pkg_line("scoop", "按系统策略跳过.", MsgKind::Warn));
         return;
     }
@@ -1467,7 +1455,7 @@ fn check_scoop_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         logs.push(log_pkg_line("scoop", "未安装, 跳过.", MsgKind::Warn));
         return;
     }
-    state.scoop_installed = true;
+    state.scoop.installed = true;
     logs.push(log_pkg_line(
         "scoop",
         "正在检查可升级项 (scoop status)...",
@@ -1490,7 +1478,7 @@ fn check_scoop_quiet(state: &mut AppState, logs: &mut Vec<String>) {
             script,
         ],
     ) else {
-        state.scoop_check_failed = true;
+        state.scoop.check_failed = true;
         logs.push(log_pkg_line(
             "scoop",
             "检查失败: 无法执行 scoop status.",
@@ -1500,7 +1488,7 @@ fn check_scoop_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     };
 
     if status != 0 {
-        state.scoop_check_failed = true;
+        state.scoop.check_failed = true;
         logs.push(log_pkg_line(
             "scoop",
             &format!("检查失败 (scoop status, exit {status})."),
@@ -1526,13 +1514,13 @@ fn check_scoop_quiet(state: &mut AppState, logs: &mut Vec<String>) {
             continue;
         }
         if let Some(name) = first_token(line) {
-            state.scoop_updatable_packages.push(name);
+            state.scoop.updatable_items.push(name);
         }
     }
 
-    if state.scoop_updatable_packages.is_empty() {
+    if state.scoop.updatable_items.is_empty() {
         if metadata_outdated {
-            state.scoop_has_updates = true;
+            state.scoop.has_updates = true;
             logs.push(log_pkg_line(
                 "scoop",
                 "Scoop/桶元数据有更新, 可执行 upgrade 阶段刷新.",
@@ -1542,16 +1530,16 @@ fn check_scoop_quiet(state: &mut AppState, logs: &mut Vec<String>) {
             logs.push(log_pkg_line("scoop", "已是最新.", MsgKind::Ok));
         }
     } else {
-        state.scoop_has_updates = true;
+        state.scoop.has_updates = true;
         logs.push(log_pkg_line("scoop", "以下包可升级:", MsgKind::Info));
-        for p in &state.scoop_updatable_packages {
+        for p in &state.scoop.updatable_items {
             logs.push(format!("  - {p}"));
         }
     }
 }
 
 fn check_paru_quiet(state: &mut AppState, logs: &mut Vec<String>) {
-    if !state.enable_paru {
+    if !state.enable.paru {
         logs.push(log_pkg_line("paru", "按系统策略跳过.", MsgKind::Warn));
         return;
     }
@@ -1559,14 +1547,14 @@ fn check_paru_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         logs.push(log_pkg_line("paru", "未安装, 跳过.", MsgKind::Warn));
         return;
     }
-    state.paru_installed = true;
+    state.paru.installed = true;
     logs.push(log_pkg_line(
         "paru",
         "正在检查 AUR 可升级项 (paru -Qua)...",
         MsgKind::Info,
     ));
     let Ok((status, output)) = run_capture("paru", &["-Qua"]) else {
-        state.paru_check_failed = true;
+        state.paru.check_failed = true;
         logs.push(log_pkg_line(
             "paru",
             "检查失败: 无法执行 paru 命令.",
@@ -1581,7 +1569,7 @@ fn check_paru_quiet(state: &mut AppState, logs: &mut Vec<String>) {
             logs.push(log_pkg_line("paru", "AUR 包已是最新.", MsgKind::Ok));
             return;
         }
-        state.paru_check_failed = true;
+        state.paru.check_failed = true;
         logs.push(log_pkg_line(
             "paru",
             &format!("检查失败 (exit {status})."),
@@ -1595,22 +1583,22 @@ fn check_paru_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         .filter(|x| !x.is_empty())
     {
         if let Some(name) = first_token(line) {
-            state.paru_updatable_packages.push(name);
+            state.paru.updatable_items.push(name);
         }
     }
-    if state.paru_updatable_packages.is_empty() {
+    if state.paru.updatable_items.is_empty() {
         logs.push(log_pkg_line("paru", "AUR 包已是最新.", MsgKind::Ok));
     } else {
-        state.paru_has_updates = true;
+        state.paru.has_updates = true;
         logs.push(log_pkg_line("paru", "以下 AUR 包可升级:", MsgKind::Info));
-        for p in &state.paru_updatable_packages {
+        for p in &state.paru.updatable_items {
             logs.push(format!("  - {p}"));
         }
     }
 }
 
 fn check_flatpak_quiet(state: &mut AppState, logs: &mut Vec<String>) {
-    if !state.enable_flatpak {
+    if !state.enable.flatpak {
         logs.push(log_pkg_line("flatpak", "按系统策略跳过.", MsgKind::Warn));
         return;
     }
@@ -1618,7 +1606,7 @@ fn check_flatpak_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         logs.push(log_pkg_line("flatpak", "未安装, 跳过.", MsgKind::Warn));
         return;
     }
-    state.flatpak_installed = true;
+    state.flatpak.installed = true;
     logs.push(log_pkg_line(
         "flatpak",
         "正在检查可升级项 (flatpak remote-ls --updates --columns=application)...",
@@ -1628,7 +1616,7 @@ fn check_flatpak_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         "flatpak",
         &["remote-ls", "--updates", "--columns=application"],
     ) else {
-        state.flatpak_check_failed = true;
+        state.flatpak.check_failed = true;
         logs.push(log_pkg_line(
             "flatpak",
             "检查失败: 无法执行 flatpak 命令.",
@@ -1637,7 +1625,7 @@ fn check_flatpak_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     };
     if status != 0 {
-        state.flatpak_check_failed = true;
+        state.flatpak.check_failed = true;
         logs.push(log_pkg_line(
             "flatpak",
             &format!("检查失败 (exit {status})."),
@@ -1645,25 +1633,25 @@ fn check_flatpak_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         ));
         return;
     }
-    state.flatpak_updatable_refs = output
+    state.flatpak.updatable_items = output
         .lines()
         .map(str::trim)
         .filter(|x| !x.is_empty())
         .map(ToOwned::to_owned)
         .collect();
-    if state.flatpak_updatable_refs.is_empty() {
+    if state.flatpak.updatable_items.is_empty() {
         logs.push(log_pkg_line("flatpak", "已是最新.", MsgKind::Ok));
     } else {
-        state.flatpak_has_updates = true;
+        state.flatpak.has_updates = true;
         logs.push(log_pkg_line("flatpak", "以下应用可升级:", MsgKind::Info));
-        for p in &state.flatpak_updatable_refs {
+        for p in &state.flatpak.updatable_items {
             logs.push(format!("  - {p}"));
         }
     }
 }
 
 fn check_pacman_quiet(state: &mut AppState, logs: &mut Vec<String>) {
-    if !state.enable_pacman {
+    if !state.enable.pacman {
         logs.push(log_pkg_line("pacman", "按系统策略跳过.", MsgKind::Warn));
         return;
     }
@@ -1671,7 +1659,7 @@ fn check_pacman_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         logs.push(log_pkg_line("pacman", "未安装, 跳过.", MsgKind::Warn));
         return;
     }
-    state.pacman_installed = true;
+    state.pacman.installed = true;
     let use_checkupdates = command_exists("checkupdates");
     let (status, output) = if use_checkupdates {
         run_capture("checkupdates", &[]).unwrap_or((-1, String::new()))
@@ -1687,7 +1675,7 @@ fn check_pacman_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         if no_updates {
             logs.push(log_pkg_line("pacman", "已是最新.", MsgKind::Ok));
         } else {
-            state.pacman_check_failed = true;
+            state.pacman.check_failed = true;
             logs.push(log_pkg_line(
                 "pacman",
                 &format!("检查失败 (exit {status})."),
@@ -1698,22 +1686,22 @@ fn check_pacman_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     }
     for line in output.lines().map(str::trim).filter(|x| !x.is_empty()) {
         if let Some(name) = first_token(line) {
-            state.pacman_updatable_packages.push(name);
+            state.pacman.updatable_items.push(name);
         }
     }
-    if state.pacman_updatable_packages.is_empty() {
+    if state.pacman.updatable_items.is_empty() {
         logs.push(log_pkg_line("pacman", "已是最新.", MsgKind::Ok));
     } else {
-        state.pacman_has_updates = true;
+        state.pacman.has_updates = true;
         logs.push(log_pkg_line("pacman", "以下包可升级:", MsgKind::Info));
-        for p in &state.pacman_updatable_packages {
+        for p in &state.pacman.updatable_items {
             logs.push(format!("  - {p}"));
         }
     }
 }
 
 fn check_pkg_quiet(state: &mut AppState, logs: &mut Vec<String>) {
-    if !state.enable_pkg {
+    if !state.enable.pkg {
         logs.push(log_pkg_line("pkg", "按系统策略跳过.", MsgKind::Warn));
         return;
     }
@@ -1722,14 +1710,14 @@ fn check_pkg_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     }
 
-    state.pkg_installed = true;
+    state.pkg.installed = true;
     logs.push(log_pkg_line(
         "pkg",
         "正在检查可升级项 (apt list --upgradable)...",
         MsgKind::Info,
     ));
     let Ok((status, output)) = run_capture("apt", &["list", "--upgradable"]) else {
-        state.pkg_check_failed = true;
+        state.pkg.check_failed = true;
         logs.push(log_pkg_line(
             "pkg",
             "检查失败: 无法执行 apt 命令.",
@@ -1738,7 +1726,7 @@ fn check_pkg_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     };
     if status != 0 {
-        state.pkg_check_failed = true;
+        state.pkg.check_failed = true;
         logs.push(log_pkg_line(
             "pkg",
             &format!("检查失败 (exit {status})."),
@@ -1761,16 +1749,16 @@ fn check_pkg_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         }
         let name = token.split('/').next().unwrap_or(token).to_string();
         if !name.is_empty() {
-            state.pkg_updatable_packages.push(name);
+            state.pkg.updatable_items.push(name);
         }
     }
 
-    if state.pkg_updatable_packages.is_empty() {
+    if state.pkg.updatable_items.is_empty() {
         logs.push(log_pkg_line("pkg", "已是最新.", MsgKind::Ok));
     } else {
-        state.pkg_has_updates = true;
+        state.pkg.has_updates = true;
         logs.push(log_pkg_line("pkg", "以下包可升级:", MsgKind::Info));
-        for p in &state.pkg_updatable_packages {
+        for p in &state.pkg.updatable_items {
             logs.push(format!("  - {p}"));
         }
     }
@@ -1789,7 +1777,7 @@ fn extract_marker_count(output: &str, marker: &str) -> Option<usize> {
 }
 
 fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
-    if !state.enable_nvim {
+    if !state.enable.nvim {
         logs.push(log_pkg_line("nvim", "按系统策略跳过.", MsgKind::Warn));
         return;
     }
@@ -1797,7 +1785,7 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         logs.push(log_pkg_line("nvim", "未安装, 跳过.", MsgKind::Warn));
         return;
     }
-    state.nvim_installed = true;
+    state.nvim.installed = true;
     logs.push(log_pkg_line(
         "nvim",
         "正在检查 Lazy/Mason 可用性...",
@@ -1808,7 +1796,7 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         "+lua local ok=pcall(require,'lazy'); print(ok and 'UPDT_LAZY_OK' or 'UPDT_LAZY_MISSING')",
         "+qa",
     ]) else {
-        state.nvim_check_failed = true;
+        state.nvim.check_failed = true;
         logs.push(log_pkg_line(
             "nvim",
             "检查失败: 无法启动 nvim.",
@@ -1817,7 +1805,7 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     };
     if lazy_status != 0 {
-        state.nvim_check_failed = true;
+        state.nvim.check_failed = true;
         logs.push(log_pkg_line(
             "nvim",
             &format!("检查失败: Lazy 探测退出码 {lazy_status}."),
@@ -1825,13 +1813,13 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         ));
         return;
     }
-    state.nvim_lazy_available = lazy_out.contains("UPDT_LAZY_OK");
+    state.nvim.lazy_available = lazy_out.contains("UPDT_LAZY_OK");
 
     let Ok((mason_status, mason_out)) = run_nvim_headless_capture(&[
         "+lua local ok=pcall(require,'mason'); print(ok and 'UPDT_MASON_OK' or 'UPDT_MASON_MISSING')",
         "+qa",
     ]) else {
-        state.nvim_check_failed = true;
+        state.nvim.check_failed = true;
         logs.push(log_pkg_line(
             "nvim",
             "检查失败: Mason 探测命令失败.",
@@ -1840,7 +1828,7 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     };
     if mason_status != 0 {
-        state.nvim_check_failed = true;
+        state.nvim.check_failed = true;
         logs.push(log_pkg_line(
             "nvim",
             &format!("检查失败: Mason 探测退出码 {mason_status}."),
@@ -1848,9 +1836,9 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         ));
         return;
     }
-    state.nvim_mason_available = mason_out.contains("UPDT_MASON_OK");
+    state.nvim.mason_available = mason_out.contains("UPDT_MASON_OK");
 
-    if !state.nvim_lazy_available && !state.nvim_mason_available {
+    if !state.nvim.lazy_available && !state.nvim.mason_available {
         logs.push(log_pkg_line(
             "nvim",
             "未检测到 Lazy 或 Mason, 跳过.",
@@ -1859,12 +1847,12 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     }
 
-    if state.nvim_lazy_available {
+    if state.nvim.lazy_available {
         let Ok((lazy_count_status, lazy_count_out)) = run_nvim_headless_capture(&[
             "+lua local checker=require('lazy.manage.checker'); checker.check({show=false}); vim.wait(120000, function() return not checker.running end, 200); local n=0; for _ in pairs(checker.updated or {}) do n=n+1 end; print('UPDT_LAZY_COUNT='..n)",
             "+qa",
         ]) else {
-            state.nvim_check_failed = true;
+            state.nvim.check_failed = true;
             logs.push(log_pkg_line(
                 "nvim",
                 "检查失败: Lazy 更新计数命令失败.",
@@ -1873,7 +1861,7 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
             return;
         };
         if lazy_count_status != 0 {
-            state.nvim_check_failed = true;
+            state.nvim.check_failed = true;
             logs.push(log_pkg_line(
                 "nvim",
                 &format!("检查失败: Lazy 计数退出码 {lazy_count_status}."),
@@ -1884,11 +1872,12 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         if let Some(lazy_count) = extract_marker_count(&lazy_count_out, "UPDT_LAZY_COUNT=") {
             if lazy_count > 0 {
                 state
-                    .nvim_updatable_components
+                    .nvim
+                    .updatable_components
                     .push(format!("Lazy plugins: {lazy_count} 项可更新"));
             }
         } else {
-            state.nvim_check_failed = true;
+            state.nvim.check_failed = true;
             logs.push(log_pkg_line(
                 "nvim",
                 "检查失败: Lazy 计数输出解析失败.",
@@ -1898,12 +1887,12 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         }
     }
 
-    if state.nvim_mason_available {
+    if state.nvim.mason_available {
         let Ok((mason_count_status, mason_count_out)) = run_nvim_headless_capture(&[
             "+lua local reg=require('mason-registry'); local ok,pkgs=pcall(reg.get_installed_packages); if not ok then print('UPDT_MASON_COUNT=0') return end; local n=0; for _,p in ipairs(pkgs) do local ok_i,iv=pcall(p.get_installed_version,p); local ok_l,lv=pcall(p.get_latest_version,p); if ok_i and ok_l and tostring(iv)~=tostring(lv) then n=n+1 end end; print('UPDT_MASON_COUNT='..n)",
             "+qa",
         ]) else {
-            state.nvim_check_failed = true;
+            state.nvim.check_failed = true;
             logs.push(log_pkg_line(
                 "nvim",
                 "检查失败: Mason 更新计数命令失败.",
@@ -1912,7 +1901,7 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
             return;
         };
         if mason_count_status != 0 {
-            state.nvim_check_failed = true;
+            state.nvim.check_failed = true;
             logs.push(log_pkg_line(
                 "nvim",
                 &format!("检查失败: Mason 计数退出码 {mason_count_status}."),
@@ -1923,11 +1912,12 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         if let Some(mason_count) = extract_marker_count(&mason_count_out, "UPDT_MASON_COUNT=") {
             if mason_count > 0 {
                 state
-                    .nvim_updatable_components
+                    .nvim
+                    .updatable_components
                     .push(format!("Mason tools: {mason_count} 项可更新"));
             }
         } else {
-            state.nvim_check_failed = true;
+            state.nvim.check_failed = true;
             logs.push(log_pkg_line(
                 "nvim",
                 "检查失败: Mason 计数输出解析失败.",
@@ -1937,7 +1927,7 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         }
     }
 
-    if state.nvim_updatable_components.is_empty() {
+    if state.nvim.updatable_components.is_empty() {
         logs.push(log_pkg_line(
             "nvim",
             "Neovim 插件与 Mason 已是最新.",
@@ -1946,9 +1936,9 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     }
 
-    state.nvim_has_updates = true;
+    state.nvim.has_updates = true;
     logs.push(log_pkg_line("nvim", "检测到可更新项:", MsgKind::Info));
-    for item in &state.nvim_updatable_components {
+    for item in &state.nvim.updatable_components {
         logs.push(format!("  - {item}"));
     }
 }
@@ -1957,19 +1947,8 @@ fn run_single_check(target: &str) -> CheckResult {
     let mut local = AppState::default();
     let mut logs = Vec::new();
     parse_profile(&mut local);
-    match target {
-        "brew" => check_brew_quiet(&mut local, &mut logs),
-        "npm" => check_npm_quiet(&mut local, &mut logs),
-        "cargo" => check_cargo_quiet(&mut local, &mut logs),
-        "nvim" => check_nvim_quiet(&mut local, &mut logs),
-        "rustup" => check_rustup_quiet(&mut local, &mut logs),
-        "fnm" => check_fnm_quiet(&mut local, &mut logs),
-        "scoop" => check_scoop_quiet(&mut local, &mut logs),
-        "paru" => check_paru_quiet(&mut local, &mut logs),
-        "flatpak" => check_flatpak_quiet(&mut local, &mut logs),
-        "pacman" => check_pacman_quiet(&mut local, &mut logs),
-        "pkg" => check_pkg_quiet(&mut local, &mut logs),
-        _ => {}
+    if let Some(run) = check_runner_for_target(target) {
+        run(&mut local, &mut logs);
     }
     CheckResult {
         target: target.to_string(),
@@ -1980,76 +1959,17 @@ fn run_single_check(target: &str) -> CheckResult {
 
 fn merge_check_result(state: &mut AppState, target: &str, local: AppState) {
     match target {
-        "brew" => {
-            state.brew_installed = local.brew_installed;
-            state.brew_has_updates = local.brew_has_updates;
-            state.brew_check_failed = local.brew_check_failed;
-            state.brew_formula_list = local.brew_formula_list;
-            state.brew_cask_list = local.brew_cask_list;
-        }
-        "npm" => {
-            state.npm_installed = local.npm_installed;
-            state.npm_has_updates = local.npm_has_updates;
-            state.npm_check_failed = local.npm_check_failed;
-            state.npm_updatable_packages = local.npm_updatable_packages;
-        }
-        "cargo" => {
-            state.cargo_installed = local.cargo_installed;
-            state.cargo_has_updates = local.cargo_has_updates;
-            state.cargo_check_failed = local.cargo_check_failed;
-            state.cargo_updater_installed = local.cargo_updater_installed;
-            state.cargo_updatable_packages = local.cargo_updatable_packages;
-        }
-        "nvim" => {
-            state.nvim_installed = local.nvim_installed;
-            state.nvim_has_updates = local.nvim_has_updates;
-            state.nvim_check_failed = local.nvim_check_failed;
-            state.nvim_lazy_available = local.nvim_lazy_available;
-            state.nvim_mason_available = local.nvim_mason_available;
-            state.nvim_updatable_components = local.nvim_updatable_components;
-        }
-        "rustup" => {
-            state.rustup_installed = local.rustup_installed;
-            state.rustup_has_updates = local.rustup_has_updates;
-            state.rustup_check_failed = local.rustup_check_failed;
-            state.rustup_updatable_toolchains = local.rustup_updatable_toolchains;
-        }
-        "fnm" => {
-            state.fnm_installed = local.fnm_installed;
-            state.fnm_has_updates = local.fnm_has_updates;
-            state.fnm_check_failed = local.fnm_check_failed;
-            state.fnm_updatable_versions = local.fnm_updatable_versions;
-        }
-        "scoop" => {
-            state.scoop_installed = local.scoop_installed;
-            state.scoop_has_updates = local.scoop_has_updates;
-            state.scoop_check_failed = local.scoop_check_failed;
-            state.scoop_updatable_packages = local.scoop_updatable_packages;
-        }
-        "paru" => {
-            state.paru_installed = local.paru_installed;
-            state.paru_has_updates = local.paru_has_updates;
-            state.paru_check_failed = local.paru_check_failed;
-            state.paru_updatable_packages = local.paru_updatable_packages;
-        }
-        "flatpak" => {
-            state.flatpak_installed = local.flatpak_installed;
-            state.flatpak_has_updates = local.flatpak_has_updates;
-            state.flatpak_check_failed = local.flatpak_check_failed;
-            state.flatpak_updatable_refs = local.flatpak_updatable_refs;
-        }
-        "pacman" => {
-            state.pacman_installed = local.pacman_installed;
-            state.pacman_has_updates = local.pacman_has_updates;
-            state.pacman_check_failed = local.pacman_check_failed;
-            state.pacman_updatable_packages = local.pacman_updatable_packages;
-        }
-        "pkg" => {
-            state.pkg_installed = local.pkg_installed;
-            state.pkg_has_updates = local.pkg_has_updates;
-            state.pkg_check_failed = local.pkg_check_failed;
-            state.pkg_updatable_packages = local.pkg_updatable_packages;
-        }
+        "brew" => state.brew = local.brew,
+        "npm" => state.npm = local.npm,
+        "cargo" => state.cargo = local.cargo,
+        "nvim" => state.nvim = local.nvim,
+        "rustup" => state.rustup = local.rustup,
+        "fnm" => state.fnm = local.fnm,
+        "scoop" => state.scoop = local.scoop,
+        "paru" => state.paru = local.paru,
+        "flatpak" => state.flatpak = local.flatpak,
+        "pacman" => state.pacman = local.pacman,
+        "pkg" => state.pkg = local.pkg,
         _ => {}
     }
 }
@@ -2305,11 +2225,13 @@ fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
 
     if selected.iter().any(|s| s == "cargo") {
         cargo_self_needs_update = state
-            .cargo_updatable_packages
+            .cargo
+            .updatable_packages
             .iter()
             .any(|pkg| pkg.as_str() == self_pkg);
         let targets: Vec<String> = state
-            .cargo_updatable_packages
+            .cargo
+            .updatable_packages
             .iter()
             .filter(|pkg| pkg.as_str() != self_pkg)
             .cloned()
@@ -2344,10 +2266,10 @@ fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
     }
 
     if selected.iter().any(|s| s == "nvim") {
-        if !state.nvim_installed {
+        if !state.nvim.installed {
             println!("[nvim] 未安装 nvim, 跳过.");
         } else {
-            if state.nvim_lazy_available {
+            if state.nvim.lazy_available {
                 println!("[nvim] 正在执行: nvim --headless \"+Lazy! sync\" +qa");
                 match run_nvim_headless_inherit(&["+Lazy! sync", "+qa"]) {
                     Ok(true) => println!("[nvim] Lazy 插件更新完成."),
@@ -2360,7 +2282,7 @@ fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
                 println!("[nvim] 未检测到 Lazy 插件管理器, 跳过插件更新.");
             }
 
-            if state.nvim_mason_available {
+            if state.nvim.mason_available {
                 println!(
                     "[nvim] 正在执行: nvim --headless \"+Lazy load mason.nvim\" \"+MasonUpdate\" +qa"
                 );
@@ -2544,41 +2466,15 @@ fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
 }
 
 fn build_upgradable_targets(state: &AppState) -> Vec<String> {
-    let mut upgradable_targets = Vec::<String>::new();
-    if state.brew_has_updates {
-        upgradable_targets.push("brew".to_string());
-    }
-    if state.npm_has_updates {
-        upgradable_targets.push("npm".to_string());
-    }
-    if state.cargo_has_updates {
-        upgradable_targets.push("cargo".to_string());
-    }
-    if state.nvim_has_updates {
-        upgradable_targets.push("nvim".to_string());
-    }
-    if state.rustup_has_updates {
-        upgradable_targets.push("rustup".to_string());
-    }
-    if state.fnm_has_updates {
-        upgradable_targets.push("fnm".to_string());
-    }
-    if state.scoop_has_updates {
-        upgradable_targets.push("scoop".to_string());
-    }
-    if state.paru_has_updates {
-        upgradable_targets.push("paru".to_string());
-    }
-    if state.flatpak_has_updates {
-        upgradable_targets.push("flatpak".to_string());
-    }
-    if state.pacman_has_updates {
-        upgradable_targets.push("pacman".to_string());
-    }
-    if state.pkg_has_updates {
-        upgradable_targets.push("pkg".to_string());
-    }
-    upgradable_targets
+    TARGET_IDS
+        .iter()
+        .filter(|target| {
+            target_state_flags(state, target)
+                .map(|flags| flags.has_updates)
+                .unwrap_or(false)
+        })
+        .map(|target| target.to_string())
+        .collect()
 }
 
 fn resolve_cli_selection(requested: &[String], upgradable_targets: &[String]) -> Vec<String> {
@@ -2597,23 +2493,17 @@ fn resolve_cli_selection(requested: &[String], upgradable_targets: &[String]) ->
 }
 
 fn any_check_failed(state: &AppState) -> bool {
-    state.brew_check_failed
-        || state.npm_check_failed
-        || state.cargo_check_failed
-        || state.nvim_check_failed
-        || state.rustup_check_failed
-        || state.fnm_check_failed
-        || state.scoop_check_failed
-        || state.paru_check_failed
-        || state.flatpak_check_failed
-        || state.pacman_check_failed
-        || state.pkg_check_failed
+    TARGET_IDS.iter().any(|target| {
+        target_state_flags(state, target)
+            .map(|flags| flags.check_failed)
+            .unwrap_or(false)
+    })
 }
 
 fn cargo_update_missing(state: &AppState) -> bool {
-    state.enable_cargo
-        && state.cargo_installed
-        && !state.cargo_updater_installed
+    state.enable.cargo
+        && state.cargo.installed
+        && !state.cargo.updater_installed
         && command_exists("cargo")
         && !command_exists("cargo-install-update")
 }
@@ -2782,17 +2672,22 @@ fn wait_tui_message_on_checks(
     }
 }
 
+struct SelectionConfirmView<'a> {
+    state: &'a AppState,
+    check_targets: &'a [String],
+    start_time: &'a str,
+    upgradable_targets: &'a [String],
+    selected_targets: &'a [String],
+    title: &'a str,
+    lines: &'a [String],
+}
+
 fn wait_tui_float_on_selection(
     terminal: &mut AppTerminal,
-    state: &AppState,
-    check_targets: &[String],
-    start_time: &str,
-    upgradable_targets: &[String],
-    selected_targets: &[String],
-    title: &str,
-    lines: &[String],
+    view: &SelectionConfirmView<'_>,
 ) -> io::Result<bool> {
-    let clean_lines = lines
+    let clean_lines = view
+        .lines
         .iter()
         .map(|line| strip_ansi_control_sequences(line))
         .collect::<Vec<_>>();
@@ -2802,7 +2697,7 @@ fn wait_tui_float_on_selection(
         terminal.draw(|frame| {
             let area = frame.area();
             let targets_height =
-                ((check_targets.len() as u16) + 2).clamp(3, area.height.saturating_sub(7));
+                ((view.check_targets.len() as u16) + 2).clamp(3, area.height.saturating_sub(7));
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -2814,18 +2709,20 @@ fn wait_tui_float_on_selection(
                 .split(area);
 
             let header = Paragraph::new(format!(
-                "开始时间: {start_time}\n系统策略: {}\n进度: {}/{}",
-                profile_name(state.system_profile),
-                check_targets.len(),
-                check_targets.len()
+                "开始时间: {}\n系统策略: {}\n进度: {}/{}",
+                view.start_time,
+                profile_name(view.state.system_profile),
+                view.check_targets.len(),
+                view.check_targets.len()
             ))
             .block(Block::default().title("检查可升级项").borders(Borders::ALL));
             frame.render_widget(header, chunks[0]);
 
-            let target_items: Vec<ListItem> = check_targets
+            let target_items: Vec<ListItem> = view
+                .check_targets
                 .iter()
                 .map(|target| {
-                    let (kind, summary) = summarize_target_status(target, state);
+                    let (kind, summary) = summarize_target_status(target, view.state);
                     let style = match kind {
                         MsgKind::Info => Style::default().fg(Color::Cyan),
                         MsgKind::Ok => Style::default().fg(Color::Green),
@@ -2842,10 +2739,11 @@ fn wait_tui_float_on_selection(
                 .block(Block::default().title("updt").borders(Borders::ALL));
             frame.render_widget(help, chunks[2]);
 
-            let items: Vec<ListItem> = upgradable_targets
+            let items: Vec<ListItem> = view
+                .upgradable_targets
                 .iter()
                 .map(|item| {
-                    let checked = selected_targets.iter().any(|t| t == item);
+                    let checked = view.selected_targets.iter().any(|t| t == item);
                     let mark = if checked { "[x]" } else { "[ ]" };
                     ListItem::new(format!("{mark} {}", target_label(item)))
                 })
@@ -2857,7 +2755,8 @@ fn wait_tui_float_on_selection(
             );
             frame.render_widget(list, chunks[3]);
 
-            let popup_height = ((lines.len() as u16) + 2).clamp(3, area.height.saturating_sub(2));
+            let popup_height =
+                ((view.lines.len() as u16) + 2).clamp(3, area.height.saturating_sub(2));
             let popup_width = area.width.saturating_mul(80) / 100;
             let v = Layout::default()
                 .direction(Direction::Vertical)
@@ -2878,7 +2777,7 @@ fn wait_tui_float_on_selection(
             let popup = h[1];
 
             frame.render_widget(Clear, popup);
-            let block = Block::default().title(title).borders(Borders::ALL);
+            let block = Block::default().title(view.title).borders(Borders::ALL);
             let inner = block.inner(popup);
             frame.render_widget(block, popup);
 
@@ -3046,10 +2945,10 @@ fn offer_install_cargo_update_tui(
     let install_result = run_inherit_outside_tui(terminal, "cargo", &["install", "cargo-update"]);
     match install_result {
         Ok(true) => {
-            state.cargo_has_updates = false;
-            state.cargo_check_failed = false;
-            state.cargo_updater_installed = false;
-            state.cargo_updatable_packages.clear();
+            state.cargo.has_updates = false;
+            state.cargo.check_failed = false;
+            state.cargo.updater_installed = false;
+            state.cargo.updatable_packages.clear();
             let mut logs = Vec::new();
             let mut local = AppState::default();
             parse_profile(&mut local);
@@ -3063,7 +2962,7 @@ fn offer_install_cargo_update_tui(
             let _ = wait_tui_message(terminal, "cargo-update", &lines)?;
         }
         Ok(false) => {
-            state.cargo_check_failed = true;
+            state.cargo.check_failed = true;
             let lines = vec![
                 "cargo-update 安装失败 (退出码非 0).".to_string(),
                 "".to_string(),
@@ -3072,7 +2971,7 @@ fn offer_install_cargo_update_tui(
             let _ = wait_tui_message(terminal, "cargo-update", &lines)?;
         }
         Err(err) => {
-            state.cargo_check_failed = true;
+            state.cargo.check_failed = true;
             let lines = vec![
                 format!("cargo-update 安装失败: {err}"),
                 "".to_string(),
@@ -3100,10 +2999,10 @@ fn offer_install_cargo_update(state: &mut AppState) {
     match run_inherit("cargo", &["install", "cargo-update"]) {
         Ok(true) => {
             println!("[cargo] cargo-update 安装完成, 正在重新检查 cargo.");
-            state.cargo_has_updates = false;
-            state.cargo_check_failed = false;
-            state.cargo_updater_installed = false;
-            state.cargo_updatable_packages.clear();
+            state.cargo.has_updates = false;
+            state.cargo.check_failed = false;
+            state.cargo.updater_installed = false;
+            state.cargo.updatable_packages.clear();
             let mut logs = Vec::new();
             let mut local = AppState::default();
             parse_profile(&mut local);
@@ -3115,7 +3014,7 @@ fn offer_install_cargo_update(state: &mut AppState) {
             }
         }
         _ => {
-            state.cargo_check_failed = true;
+            state.cargo.check_failed = true;
             println!("{}", err_text("[cargo] cargo-update 安装失败."));
         }
     }
@@ -3226,16 +3125,16 @@ fn run_interactive_flow(
         lines.push("".to_string());
         lines.push("左右键: 选择按钮    Enter: 确认".to_string());
 
-        if wait_tui_float_on_selection(
-            &mut terminal,
+        let confirm_view = SelectionConfirmView {
             state,
-            &targets,
+            check_targets: &targets,
             start_time,
-            &upgradable_targets,
-            &selected_targets,
-            "执行升级",
-            &lines,
-        )? {
+            upgradable_targets: &upgradable_targets,
+            selected_targets: &selected_targets,
+            title: "执行升级",
+            lines: &lines,
+        };
+        if wait_tui_float_on_selection(&mut terminal, &confirm_view)? {
             return Ok(InteractiveResult::RunUpgrade(selected_targets));
         }
 
