@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release Upgrade"
+  short_description: "Bump version, push, and publish updt"
+  default_prompt: "Prepare and execute the updt release upgrade workflow."
