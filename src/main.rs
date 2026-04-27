@@ -1,7 +1,7 @@
 use chrono::Local;
 use clap::{Arg, Command as ClapCommand, builder::PossibleValuesParser};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     style::{Attribute, Color as TermColor, Stylize},
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -302,6 +302,24 @@ fn log_pkg_line(pkg: &str, msg: &str, kind: MsgKind) -> String {
         MsgKind::Warn => warn_text(msg),
     };
     format!("{prefix} {body}")
+}
+
+fn interrupted_error() -> io::Error {
+    io::Error::new(io::ErrorKind::Interrupted, "user requested exit")
+}
+
+fn print_exit_signal_message() {
+    println!(
+        "{}",
+        warn_text("检测到中断信号 (Ctrl+C/Ctrl+D), 程序已安全退出.")
+    );
+}
+
+fn is_ctrl_exit_key(key: &crossterm::event::KeyEvent) -> bool {
+    if !key.modifiers.contains(KeyModifiers::CONTROL) {
+        return false;
+    }
+    matches!(key.code, KeyCode::Char('c') | KeyCode::Char('d'))
 }
 
 fn section_title(target: &str) -> &'static str {
@@ -648,13 +666,24 @@ fn select_targets_prompt(state: &AppState, upgradable_targets: &[String]) -> Vec
         print!("{message} [Y/n]: ");
         let _ = io::stdout().flush();
         let mut answer = String::new();
-        if io::stdin().read_line(&mut answer).is_ok()
-            && matches!(
-                answer.trim().to_ascii_lowercase().as_str(),
-                "" | "y" | "yes"
-            )
-        {
-            selected_targets.push(target.clone());
+        match io::stdin().read_line(&mut answer) {
+            Ok(0) => {
+                print_exit_signal_message();
+                return Vec::new();
+            }
+            Ok(_) => {
+                if matches!(
+                    answer.trim().to_ascii_lowercase().as_str(),
+                    "" | "y" | "yes"
+                ) {
+                    selected_targets.push(target.clone());
+                }
+            }
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {
+                print_exit_signal_message();
+                return Vec::new();
+            }
+            Err(_) => return Vec::new(),
         }
     }
     selected_targets
@@ -830,6 +859,9 @@ fn select_targets_tui_with_checks(
         if key.kind != KeyEventKind::Press {
             continue;
         }
+        if is_ctrl_exit_key(&key) {
+            return Err(interrupted_error());
+        }
 
         match key.code {
             KeyCode::Up => {
@@ -871,6 +903,10 @@ fn select_targets(state: &AppState, upgradable_targets: &[String]) -> Vec<String
         })();
         match tui_result {
             Ok(chosen) => return chosen,
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {
+                print_exit_signal_message();
+                return Vec::new();
+            }
             Err(err) => {
                 eprintln!("[ui] TUI 初始化失败, 自动回退文本交互: {err}");
             }
@@ -2160,6 +2196,13 @@ fn run_checks_tui(
         if done_count >= rows.len() {
             break;
         }
+        if event::poll(Duration::from_millis(20))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+            && is_ctrl_exit_key(&key)
+        {
+            return Err(interrupted_error());
+        }
         thread::sleep(Duration::from_millis(80));
     }
 
@@ -2178,6 +2221,10 @@ fn run_checks(state: &mut AppState, requested: &[String], start_time: &str) {
             run_checks_tui(&mut terminal, state, &targets, start_time)
         })();
         if let Err(err) = tui_result {
+            if err.kind() == io::ErrorKind::Interrupted {
+                print_exit_signal_message();
+                process::exit(0);
+            }
             eprintln!("[ui] TUI 初始化失败, 自动回退文本输出: {err}");
             run_checks_plain(state, &targets);
         }
@@ -2508,17 +2555,20 @@ fn cargo_update_missing(state: &AppState) -> bool {
         && !command_exists("cargo-install-update")
 }
 
-fn confirm_default_yes(prompt: &str) -> bool {
+fn confirm_default_yes(prompt: &str) -> Option<bool> {
     print!("{prompt} [Y/n]: ");
     let _ = io::stdout().flush();
     let mut answer = String::new();
-    if io::stdin().read_line(&mut answer).is_err() {
-        return false;
+    match io::stdin().read_line(&mut answer) {
+        Ok(0) => return None,
+        Ok(_) => {}
+        Err(err) if err.kind() == io::ErrorKind::Interrupted => return None,
+        Err(_) => return None,
     }
-    matches!(
+    Some(matches!(
         answer.trim().to_ascii_lowercase().as_str(),
         "" | "y" | "yes"
-    )
+    ))
 }
 
 fn strip_ansi_control_sequences(text: &str) -> String {
@@ -2576,6 +2626,9 @@ fn wait_tui_message(terminal: &mut AppTerminal, title: &str, lines: &[String]) -
         };
         if key.kind != KeyEventKind::Press {
             continue;
+        }
+        if is_ctrl_exit_key(&key) {
+            return Err(interrupted_error());
         }
         match key.code {
             KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => return Ok(true),
@@ -2659,6 +2712,9 @@ fn wait_tui_message_on_checks(
         };
         if key.kind != KeyEventKind::Press {
             continue;
+        }
+        if is_ctrl_exit_key(&key) {
+            return Err(interrupted_error());
         }
         match key.code {
             KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => return Ok(true),
@@ -2826,6 +2882,9 @@ fn wait_tui_float_on_selection(
         if key.kind != KeyEventKind::Press {
             continue;
         }
+        if is_ctrl_exit_key(&key) {
+            return Err(interrupted_error());
+        }
         match key.code {
             KeyCode::Left => confirm_selected = true,
             KeyCode::Right | KeyCode::Tab => confirm_selected = false,
@@ -2990,9 +3049,16 @@ fn offer_install_cargo_update(state: &mut AppState) {
 
     print_section("cargo-update");
     println!("未安装 cargo-install-update, 无法检查已安装 crate 更新.");
-    if !confirm_default_yes("是否执行 cargo install cargo-update") {
-        println!("{}", warn_text("已跳过 cargo-update 安装."));
-        return;
+    match confirm_default_yes("是否执行 cargo install cargo-update") {
+        Some(true) => {}
+        Some(false) => {
+            println!("{}", warn_text("已跳过 cargo-update 安装."));
+            return;
+        }
+        None => {
+            print_exit_signal_message();
+            process::exit(0);
+        }
     }
 
     println!("[cargo] 正在执行: cargo install cargo-update");
@@ -3180,6 +3246,10 @@ fn main() {
                 process::exit(1);
             }
             Err(err) => {
+                if err.kind() == io::ErrorKind::Interrupted {
+                    print_exit_signal_message();
+                    process::exit(0);
+                }
                 eprintln!("[ui] TUI 运行失败, 自动回退文本流程: {err}");
                 force_text_flow = true;
             }
