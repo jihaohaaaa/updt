@@ -14,9 +14,7 @@ use ratatui::{
 };
 use std::collections::HashMap;
 use std::env;
-use std::fs;
-use std::io::{self, IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::io;
 use std::process;
 #[cfg(windows)]
 use std::process::Stdio;
@@ -27,7 +25,10 @@ use std::time::Duration;
 mod checks;
 mod cli;
 mod cmd;
+mod completion;
 mod output;
+mod profile;
+mod selection;
 mod state;
 mod ui;
 
@@ -36,154 +37,25 @@ use crate::cli::{CliCommand, parse_cli};
 use crate::cmd::{
     command_exists, run_cargo_install_update_inherit, run_inherit, run_nvim_headless_inherit,
 };
+use crate::completion::install_fish_completion;
 use crate::output::{
     MsgKind, color_bold, err_text, log_pkg_line, ok_text, print_exit_signal_message, print_section,
     warn_text,
 };
+use crate::profile::{interactive_terminal, parse_profile};
+use crate::selection::{
+    confirm_default_yes, resolve_cli_selection, resolve_cli_selection_quiet, select_targets,
+    select_targets_prompt,
+};
 use crate::state::{
-    AppState, SystemProfile, TARGET_IDS, profile_name, section_title, target_enabled, target_label,
-    target_state_flags, updatable_items_for_target,
+    AppState, TARGET_IDS, profile_name, section_title, target_enabled, target_label,
+    target_state_flags,
 };
 use crate::ui::{
     AppTerminal, SelectionConfirmView, TerminalGuard, interrupted_error, is_ctrl_exit_key,
-    select_targets_tui, select_targets_tui_with_checks, summarize_target_status,
-    wait_tui_float_on_selection, wait_tui_message, wait_tui_message_on_checks,
+    select_targets_tui_with_checks, summarize_target_status, wait_tui_float_on_selection,
+    wait_tui_message, wait_tui_message_on_checks,
 };
-
-fn print_target_updatable_items(state: &AppState, target: &str) {
-    for item in updatable_items_for_target(state, target) {
-        println!("  - {item}");
-    }
-}
-
-fn select_targets_prompt(state: &AppState, upgradable_targets: &[String]) -> Vec<String> {
-    let mut selected_targets = Vec::<String>::new();
-    println!("逐项确认待升级项目.");
-
-    for target in upgradable_targets {
-        println!("{}", target_label(target));
-        print_target_updatable_items(state, target);
-        let message = format!("是否升级 {}", target_label(target));
-        print!("{message} [Y/n]: ");
-        let _ = io::stdout().flush();
-        let mut answer = String::new();
-        match io::stdin().read_line(&mut answer) {
-            Ok(0) => {
-                print_exit_signal_message();
-                return Vec::new();
-            }
-            Ok(_) => {
-                if matches!(
-                    answer.trim().to_ascii_lowercase().as_str(),
-                    "" | "y" | "yes"
-                ) {
-                    selected_targets.push(target.clone());
-                }
-            }
-            Err(err) if err.kind() == io::ErrorKind::Interrupted => {
-                print_exit_signal_message();
-                return Vec::new();
-            }
-            Err(_) => return Vec::new(),
-        }
-    }
-    selected_targets
-}
-
-fn select_targets(state: &AppState, upgradable_targets: &[String]) -> Vec<String> {
-    if io::stdout().is_terminal() && io::stdin().is_terminal() {
-        let tui_result = (|| {
-            let _guard = TerminalGuard::enter()?;
-            let backend = CrosstermBackend::new(io::stdout());
-            let mut terminal = Terminal::new(backend)?;
-            select_targets_tui(&mut terminal, state, upgradable_targets)
-        })();
-        match tui_result {
-            Ok(chosen) => return chosen,
-            Err(err) if err.kind() == io::ErrorKind::Interrupted => {
-                print_exit_signal_message();
-                return Vec::new();
-            }
-            Err(err) => {
-                eprintln!("[ui] TUI 初始化失败, 自动回退文本交互: {err}");
-            }
-        }
-    }
-    select_targets_prompt(state, upgradable_targets)
-}
-
-fn install_fish_completion() -> io::Result<PathBuf> {
-    let Some(home) = env::var_os("HOME") else {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "HOME env is not set",
-        ));
-    };
-
-    let path = PathBuf::from(home)
-        .join(".config")
-        .join("fish")
-        .join("completions")
-        .join("updt.fish");
-
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::other("invalid completion path"))?;
-    fs::create_dir_all(parent)?;
-
-    let targets = TARGET_IDS.join(" ");
-    let script = format!(
-        "set -l __updt_targets {targets}\n\n\
-complete -c updt -f\n\
-complete -c updt -s h -l help -d 'Print help'\n\
-complete -c updt -s V -l version -d 'Print version'\n\
-complete -c updt -n '__fish_use_subcommand' -a 'update fish'\n\
-complete -c updt -n '__fish_seen_subcommand_from update' -x -a \"$__updt_targets\"\n\
-complete -c updt -n '__fish_seen_subcommand_from update' -s h -l help -d 'Print help'\n"
-    );
-
-    fs::write(&path, script)?;
-    Ok(path)
-}
-
-fn parse_profile(state: &mut AppState) {
-    let prefix = env::var("PREFIX").unwrap_or_default();
-    state.enable.nvim = true;
-    state.is_termux = prefix.contains("com.termux")
-        || Path::new("/data/data/com.termux/files/usr/bin/pkg").exists();
-    state.is_arch_linux = PathBuf::from("/etc/arch-release").is_file();
-    if state.is_termux {
-        state.system_profile = SystemProfile::Termux;
-        state.enable.pkg = true;
-        state.enable.npm = true;
-        state.enable.cargo = true;
-        state.enable.fnm = true;
-        state.enable.rustup = false;
-    } else if env::consts::OS == "windows" {
-        state.system_profile = SystemProfile::Windows;
-        state.enable.npm = true;
-        state.enable.cargo = true;
-        state.enable.rustup = true;
-        state.enable.fnm = true;
-        state.enable.scoop = true;
-    } else if env::consts::OS == "macos" {
-        state.system_profile = SystemProfile::Macos;
-        state.enable.brew = true;
-        state.enable.npm = true;
-        state.enable.cargo = true;
-        state.enable.rustup = true;
-        state.enable.fnm = true;
-    } else if state.is_arch_linux {
-        state.system_profile = SystemProfile::Arch;
-        state.enable.npm = true;
-        state.enable.cargo = true;
-        state.enable.rustup = true;
-        state.enable.fnm = true;
-        state.enable.paru = true;
-        state.enable.pacman = true;
-        state.enable.flatpak = true;
-    }
-}
 
 struct CheckRow {
     target: String,
@@ -715,21 +587,6 @@ fn build_upgradable_targets(state: &AppState) -> Vec<String> {
         .collect()
 }
 
-fn resolve_cli_selection(requested: &[String], upgradable_targets: &[String]) -> Vec<String> {
-    let mut selected = Vec::<String>::new();
-    for req in requested {
-        if selected.iter().any(|x| x == req) {
-            continue;
-        }
-        if upgradable_targets.iter().any(|x| x == req) {
-            selected.push(req.clone());
-        } else {
-            println!("[cli] {} 当前没有可升级项, 跳过.", target_label(req));
-        }
-    }
-    selected
-}
-
 fn any_check_failed(state: &AppState) -> bool {
     TARGET_IDS.iter().any(|target| {
         target_state_flags(state, target)
@@ -744,22 +601,6 @@ fn cargo_update_missing(state: &AppState) -> bool {
         && !state.cargo.updater_installed
         && command_exists("cargo")
         && !command_exists("cargo-install-update")
-}
-
-fn confirm_default_yes(prompt: &str) -> Option<bool> {
-    print!("{prompt} [Y/n]: ");
-    let _ = io::stdout().flush();
-    let mut answer = String::new();
-    match io::stdin().read_line(&mut answer) {
-        Ok(0) => return None,
-        Ok(_) => {}
-        Err(err) if err.kind() == io::ErrorKind::Interrupted => return None,
-        Err(_) => return None,
-    }
-    Some(matches!(
-        answer.trim().to_ascii_lowercase().as_str(),
-        "" | "y" | "yes"
-    ))
 }
 
 fn run_inherit_outside_tui(
@@ -953,32 +794,9 @@ fn offer_install_cargo_update(state: &mut AppState) {
     }
 }
 
-fn interactive_terminal() -> bool {
-    io::stdout().is_terminal() && io::stdin().is_terminal()
-}
-
 enum InteractiveResult {
     Exit(i32),
     RunUpgrade(Vec<String>),
-}
-
-fn resolve_cli_selection_quiet(
-    requested: &[String],
-    upgradable_targets: &[String],
-) -> (Vec<String>, Vec<String>) {
-    let mut selected = Vec::<String>::new();
-    let mut skipped = Vec::<String>::new();
-    for req in requested {
-        if selected.iter().any(|x| x == req) || skipped.iter().any(|x| x == req) {
-            continue;
-        }
-        if upgradable_targets.iter().any(|x| x == req) {
-            selected.push(req.clone());
-        } else {
-            skipped.push(req.clone());
-        }
-    }
-    (selected, skipped)
 }
 
 fn run_interactive_flow(
