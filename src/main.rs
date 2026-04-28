@@ -17,7 +17,7 @@ use std::env;
 use std::io;
 use std::process;
 #[cfg(windows)]
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 use std::time::Duration;
