@@ -1,11 +1,13 @@
 use serde_json::Value;
 
-use crate::cmd::{
-    command_exists, extract_marker_count, first_json_payload, first_token, parse_cargo_list,
-    parse_fnm_version_token, run_capture, run_cargo_install_update_capture,
-    run_nvim_headless_capture, strip_ansi_control_sequences,
+use crate::command::{
+    command_exists, run_capture, run_cargo_install_update_capture, run_nvim_headless_capture,
 };
 use crate::output::{MsgKind, log_pkg_line};
+use crate::parse::{
+    extract_marker_count, first_json_payload, first_token, parse_cargo_list,
+    parse_fnm_version_token, strip_ansi_control_sequences,
+};
 use crate::parse_profile;
 use crate::state::AppState;
 

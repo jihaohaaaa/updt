@@ -14,8 +14,8 @@ use ratatui::{
 use std::io;
 use std::time::Duration;
 
-use crate::cmd::strip_ansi_control_sequences;
 use crate::output::MsgKind;
+use crate::parse::strip_ansi_control_sequences;
 use crate::state::{
     AppState, profile_name, target_label, target_state_flags, target_update_summary,
     updatable_items_for_target,
