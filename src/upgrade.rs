@@ -298,7 +298,8 @@ while (Get-Process -Id $parentPid -ErrorAction SilentlyContinue) {{ Start-Sleep 
 cargo install-update {pkg}; \
 Write-Host ''; \
 Write-Host 'Self-update finished. Press Enter to close this window.'; \
-[void](Read-Host)"
+[void](Read-Host); \
+exit"
     );
 
     let shell = if command_exists("pwsh") {
@@ -314,7 +315,6 @@ Write-Host 'Self-update finished. Press Enter to close this window.'; \
         .arg(shell)
         .arg("-NoLogo")
         .arg("-NoProfile")
-        .arg("-NoExit")
         .arg("-Command")
         .arg(&script)
         .stdin(Stdio::null())
@@ -334,7 +334,6 @@ Write-Host 'Self-update finished. Press Enter to close this window.'; \
         .arg("powershell.exe")
         .arg("-NoLogo")
         .arg("-NoProfile")
-        .arg("-NoExit")
         .arg("-Command")
         .arg(&script)
         .stdin(Stdio::null())
