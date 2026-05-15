@@ -72,7 +72,7 @@ pub fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
                 args.push(pkg.as_str());
             }
             println!(
-                "[cargo] 正在执行: cargo install-update {}",
+                "[cargo] 正在执行: cargo install-update --locked {}",
                 targets.join(" ")
             );
             match run_cargo_install_update_inherit(&args) {
@@ -244,7 +244,7 @@ pub fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
         #[cfg(windows)]
         {
             println!(
-                "[cargo] 即将单独升级 updt: 先退出当前 updt, 再执行 cargo install-update updt"
+                "[cargo] 即将单独升级 updt: 先退出当前 updt, 再执行 cargo install-update --locked updt"
             );
             match schedule_windows_self_update(self_pkg) {
                 Ok(()) => {
@@ -252,7 +252,7 @@ pub fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
                 }
                 Err(err) => {
                     println!("[cargo] 启动前台自更新窗口失败: {err}");
-                    println!("[cargo] 可手动执行: cargo install-update updt");
+                    println!("[cargo] 可手动执行: cargo install-update --locked updt");
                     run_fail = true;
                 }
             }
@@ -260,7 +260,7 @@ pub fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
 
         #[cfg(not(windows))]
         {
-            println!("[cargo] 正在执行: cargo install-update updt");
+            println!("[cargo] 正在执行: cargo install-update --locked updt");
             match run_cargo_install_update_inherit(&[self_pkg]) {
                 Ok(true) => println!("[cargo] updt 自身升级完成."),
                 _ => {
@@ -295,7 +295,7 @@ fn schedule_windows_self_update(pkg: &str) -> io::Result<()> {
         "$ErrorActionPreference='Continue'; \
 $parentPid={parent_pid}; \
 while (Get-Process -Id $parentPid -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 200 }}; \
-cargo install-update {pkg}; \
+cargo install-update --locked {pkg}; \
 Write-Host ''; \
 Write-Host 'Self-update finished. Press Enter to close this window.'; \
 [void](Read-Host); \

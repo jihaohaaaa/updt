@@ -214,7 +214,7 @@ pub fn check_cargo_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     state.cargo.updater_installed = true;
     logs.push(log_pkg_line(
         "cargo",
-        "正在检查已安装 crate 更新 (cargo install-update --list)...",
+        "正在检查已安装 crate 更新 (cargo install-update --locked --list)...",
         MsgKind::Info,
     ));
     let Ok((status, output)) = run_cargo_install_update_capture(&["--list"]) else {

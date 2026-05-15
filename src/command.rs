@@ -113,13 +113,13 @@ pub fn run_inherit(program: &str, args: &[&str]) -> io::Result<bool> {
 }
 
 pub fn run_cargo_install_update_capture(args: &[&str]) -> io::Result<(i32, String)> {
-    let mut proxy_args = vec!["install-update"];
+    let mut proxy_args = vec!["install-update", "--locked"];
     proxy_args.extend_from_slice(args);
     run_capture("cargo-install-update", &proxy_args)
 }
 
 pub fn run_cargo_install_update_inherit(args: &[&str]) -> io::Result<bool> {
-    let mut proxy_args = vec!["install-update"];
+    let mut proxy_args = vec!["install-update", "--locked"];
     proxy_args.extend_from_slice(args);
     run_inherit("cargo-install-update", &proxy_args)
 }
