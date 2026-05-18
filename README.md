@@ -88,6 +88,6 @@ Available subcommands:
 ## Notes
 
 - `cargo` checks require `cargo-install-update` in `PATH`.
-- `pacman` upgrade uses `sudo pacman -Syu`.
+- `pacman` upgrade uses `sudo pacman -Syu` when the terminal is focused, or `pkexec pacman -Syu` on desktop Linux when the terminal is not focused.
 - Termux `pkg` checks use `apt list --upgradable`.
 - `updt` calls existing package manager commands and forwards their output.

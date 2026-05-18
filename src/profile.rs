@@ -46,3 +46,15 @@ pub fn parse_profile(state: &mut AppState) {
 pub fn interactive_terminal() -> bool {
     io::stdout().is_terminal() && io::stdin().is_terminal()
 }
+
+pub fn desktop_linux_session() -> bool {
+    env::consts::OS == "linux"
+        && [
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "XDG_CURRENT_DESKTOP",
+            "DESKTOP_SESSION",
+        ]
+        .iter()
+        .any(|key| env::var_os(key).is_some_and(|value| !value.is_empty()))
+}

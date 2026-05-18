@@ -1,13 +1,16 @@
-use crate::command::{run_cargo_install_update_inherit, run_inherit, run_nvim_headless_inherit};
+use crate::command::{
+    command_exists, run_capture, run_cargo_install_update_inherit, run_inherit,
+    run_nvim_headless_inherit,
+};
 use crate::output::{err_text, ok_text, print_section};
+use crate::profile::{desktop_linux_session, interactive_terminal};
 use crate::state::{AppState, target_label};
+use std::{env, fs, process};
 
-#[cfg(windows)]
-use crate::command::command_exists;
 #[cfg(windows)]
 use std::io;
 #[cfg(windows)]
-use std::process::{self, Command, Stdio};
+use std::process::{Command, Stdio};
 
 pub fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
     print_section("执行升级");
@@ -18,14 +21,7 @@ pub fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
     let run_pacman_first = state.is_arch_linux && pacman_selected;
 
     if run_pacman_first {
-        println!("[pacman] 正在执行: sudo pacman -Syu");
-        match run_inherit("sudo", &["pacman", "-Syu"]) {
-            Ok(true) => println!("[pacman] 包升级完成."),
-            _ => {
-                println!("[pacman] 包升级失败.");
-                run_fail = true;
-            }
-        }
+        run_fail |= !run_pacman_upgrade(state);
     }
 
     if selected.iter().any(|s| s == "brew") {
@@ -223,14 +219,7 @@ pub fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
     }
 
     if pacman_selected && !run_pacman_first {
-        println!("[pacman] 正在执行: sudo pacman -Syu");
-        match run_inherit("sudo", &["pacman", "-Syu"]) {
-            Ok(true) => println!("[pacman] 包升级完成."),
-            _ => {
-                println!("[pacman] 包升级失败.");
-                run_fail = true;
-            }
-        }
+        run_fail |= !run_pacman_upgrade(state);
     }
 
     if selected.iter().any(|s| s == "pkg") {
@@ -299,6 +288,142 @@ pub fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
     }
     println!("{}", ok_text("所有已选升级项执行完成."));
     true
+}
+
+fn run_pacman_upgrade(state: &AppState) -> bool {
+    let (privilege_command, reason) = pacman_privilege_command(state);
+
+    if privilege_command == "pkexec" && !command_exists(privilege_command) {
+        println!("[pacman] 未安装 pkexec, 无法使用 GUI 提权.");
+        println!("[pacman] 包升级失败.");
+        return false;
+    }
+
+    if let Some(reason) = reason {
+        println!("[pacman] {reason}");
+    }
+    println!("[pacman] 正在执行: {privilege_command} pacman -Syu");
+    match run_inherit(privilege_command, &["pacman", "-Syu"]) {
+        Ok(true) => {
+            println!("[pacman] 包升级完成.");
+            true
+        }
+        _ => {
+            println!("[pacman] 包升级失败.");
+            false
+        }
+    }
+}
+
+fn pacman_privilege_command(state: &AppState) -> (&'static str, Option<&'static str>) {
+    if !state.is_arch_linux || !desktop_linux_session() {
+        return ("sudo", None);
+    }
+
+    match terminal_focus_state() {
+        TerminalFocusState::Focused => ("sudo", None),
+        TerminalFocusState::NotFocused => {
+            ("pkexec", Some("terminal 未处于桌面焦点, 使用 GUI 提权."))
+        }
+        TerminalFocusState::Unknown => (
+            "pkexec",
+            Some("无法确认 terminal 处于桌面焦点, 使用 GUI 提权."),
+        ),
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TerminalFocusState {
+    Focused,
+    NotFocused,
+    Unknown,
+}
+
+fn terminal_focus_state() -> TerminalFocusState {
+    if !interactive_terminal() {
+        return TerminalFocusState::NotFocused;
+    }
+
+    if let Some(focused) = terminal_focused_by_x11_window_id() {
+        return if focused {
+            TerminalFocusState::Focused
+        } else {
+            TerminalFocusState::NotFocused
+        };
+    }
+
+    if let Some(pid) = active_window_pid() {
+        return if current_process_belongs_to_window(pid) {
+            TerminalFocusState::Focused
+        } else {
+            TerminalFocusState::NotFocused
+        };
+    }
+
+    TerminalFocusState::Unknown
+}
+
+fn terminal_focused_by_x11_window_id() -> Option<bool> {
+    let terminal_window_id = env::var("WINDOWID").ok()?.trim().parse::<u64>().ok()?;
+    if terminal_window_id == 0 || !command_exists("xdotool") {
+        return None;
+    }
+
+    let (status, output) = run_capture("xdotool", &["getactivewindow"]).ok()?;
+    if status != 0 {
+        return None;
+    }
+    let active_window_id = output.trim().parse::<u64>().ok()?;
+    Some(active_window_id == terminal_window_id)
+}
+
+fn active_window_pid() -> Option<u32> {
+    active_window_pid_from_hyprland().or_else(active_window_pid_from_x11)
+}
+
+fn active_window_pid_from_hyprland() -> Option<u32> {
+    if env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() || !command_exists("hyprctl") {
+        return None;
+    }
+
+    let (status, output) = run_capture("hyprctl", &["activewindow", "-j"]).ok()?;
+    if status != 0 {
+        return None;
+    }
+    let value = serde_json::from_str::<serde_json::Value>(&output).ok()?;
+    value
+        .get("pid")?
+        .as_u64()
+        .and_then(|pid| pid.try_into().ok())
+}
+
+fn active_window_pid_from_x11() -> Option<u32> {
+    if env::var_os("DISPLAY").is_none() || !command_exists("xdotool") {
+        return None;
+    }
+
+    let (status, output) = run_capture("xdotool", &["getactivewindow", "getwindowpid"]).ok()?;
+    if status != 0 {
+        return None;
+    }
+    output.trim().parse::<u32>().ok()
+}
+
+fn current_process_belongs_to_window(window_pid: u32) -> bool {
+    process_ancestors(process::id()).any(|pid| pid == window_pid)
+}
+
+fn process_ancestors(pid: u32) -> impl Iterator<Item = u32> {
+    std::iter::successors(Some(pid), |pid| parent_pid(*pid)).take(64)
+}
+
+fn parent_pid(pid: u32) -> Option<u32> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_comm = stat.rsplit_once(") ")?.1;
+    let mut fields = after_comm.split_whitespace();
+    fields.next()?;
+    let parent = fields.next()?.parse::<u32>().ok()?;
+    (parent != 0).then_some(parent)
 }
 
 #[cfg(windows)]
