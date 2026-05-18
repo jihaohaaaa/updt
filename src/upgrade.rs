@@ -14,6 +14,19 @@ pub fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
     let mut run_fail = false;
     let self_pkg = env!("CARGO_PKG_NAME");
     let mut cargo_self_needs_update = false;
+    let pacman_selected = selected.iter().any(|s| s == "pacman");
+    let run_pacman_first = state.is_arch_linux && pacman_selected;
+
+    if run_pacman_first {
+        println!("[pacman] 正在执行: sudo pacman -Syu");
+        match run_inherit("sudo", &["pacman", "-Syu"]) {
+            Ok(true) => println!("[pacman] 包升级完成."),
+            _ => {
+                println!("[pacman] 包升级失败.");
+                run_fail = true;
+            }
+        }
+    }
 
     if selected.iter().any(|s| s == "brew") {
         println!("[brew] 正在刷新索引: brew update --quiet");
@@ -209,7 +222,7 @@ pub fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
         }
     }
 
-    if selected.iter().any(|s| s == "pacman") {
+    if pacman_selected && !run_pacman_first {
         println!("[pacman] 正在执行: sudo pacman -Syu");
         match run_inherit("sudo", &["pacman", "-Syu"]) {
             Ok(true) => println!("[pacman] 包升级完成."),

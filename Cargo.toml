@@ -1,6 +1,6 @@
 [package]
 name = "updt"
-version = "0.1.35"
+version = "0.1.36"
 edition = "2024"
 description = "Cross-platform update helper for npm, cargo, rustup, fnm, scoop, Homebrew, paru, flatpak, pacman, and pkg."
 license = "MIT"
