@@ -6,7 +6,7 @@ use crate::command::{
 use crate::output::{MsgKind, log_pkg_line};
 use crate::parse::{
     extract_marker_count, first_json_payload, first_token, parse_cargo_list,
-    parse_fnm_version_token, strip_ansi_control_sequences,
+    parse_fnm_version_token, parse_scoop_status_output,
 };
 use crate::parse_profile;
 use crate::state::AppState;
@@ -450,22 +450,7 @@ fn check_scoop_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         MsgKind::Info,
     ));
 
-    let shell = if command_exists("pwsh") {
-        "pwsh"
-    } else {
-        "powershell.exe"
-    };
-    let script = "$rows = scoop status | Where-Object { $_.PSObject.Properties.Name -contains 'Latest Version' -and $_.'Latest Version' -ne '' } | ForEach-Object { $_.Name }; $rows | ForEach-Object { $_ }";
-    let Ok((status, output)) = run_capture(
-        shell,
-        &[
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            script,
-        ],
-    ) else {
+    let Ok((status, output)) = run_capture("scoop", &["status"]) else {
         state.scoop.check_failed = true;
         logs.push(log_pkg_line(
             "scoop",
@@ -485,26 +470,44 @@ fn check_scoop_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     }
 
-    let mut metadata_outdated = false;
-    for raw in strip_ansi_control_sequences(&output).lines() {
-        let line = raw.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if line.starts_with("WARN") {
-            if line.contains("Scoop out of date") || line.contains("bucket(s) out of date") {
-                metadata_outdated = true;
-                logs.push(log_pkg_line("scoop", line, MsgKind::Warn));
-            }
-            continue;
-        }
-        if line == "Everything is ok!" || line == "Scoop is up to date." {
-            continue;
-        }
-        if let Some(name) = first_token(line) {
-            state.scoop.updatable_items.push(name);
+    let mut parsed = parse_scoop_status_output(&output);
+    let mut metadata_outdated = parsed.metadata_outdated;
+    if parsed.updatable_items.is_empty() && metadata_outdated {
+        logs.push(log_pkg_line(
+            "scoop",
+            "Scoop/桶元数据过期, 正在刷新后重新检查 (scoop update --quiet)...",
+            MsgKind::Warn,
+        ));
+        match run_capture("scoop", &["update", "--quiet"]) {
+            Ok((0, _)) => match run_capture("scoop", &["status", "--local"]) {
+                Ok((0, refreshed_output)) => {
+                    parsed = parse_scoop_status_output(&refreshed_output);
+                    metadata_outdated = parsed.metadata_outdated;
+                }
+                Ok((refresh_status, _)) => logs.push(log_pkg_line(
+                    "scoop",
+                    &format!("重新检查失败 (scoop status --local, exit {refresh_status})."),
+                    MsgKind::Warn,
+                )),
+                Err(_) => logs.push(log_pkg_line(
+                    "scoop",
+                    "重新检查失败: 无法执行 scoop status --local.",
+                    MsgKind::Warn,
+                )),
+            },
+            Ok((refresh_status, _)) => logs.push(log_pkg_line(
+                "scoop",
+                &format!("元数据刷新失败 (scoop update --quiet, exit {refresh_status})."),
+                MsgKind::Warn,
+            )),
+            Err(_) => logs.push(log_pkg_line(
+                "scoop",
+                "元数据刷新失败: 无法执行 scoop update --quiet.",
+                MsgKind::Warn,
+            )),
         }
     }
+    state.scoop.updatable_items = parsed.updatable_items;
 
     if state.scoop.updatable_items.is_empty() {
         if metadata_outdated {

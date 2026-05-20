@@ -5,10 +5,8 @@ use crate::command::{
 use crate::output::{err_text, ok_text, print_section};
 use crate::profile::{desktop_linux_session, interactive_terminal};
 use crate::state::{AppState, target_label};
-use std::{env, fs, process};
+use std::{env, fs, io, process};
 
-#[cfg(windows)]
-use std::io;
 #[cfg(windows)]
 use std::process::{Command, Stdio};
 
@@ -177,20 +175,33 @@ pub fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
     }
 
     if selected.iter().any(|s| s == "scoop") {
-        println!("[scoop] 正在执行: scoop update");
-        match run_inherit("scoop", &["update"]) {
+        let metadata_args = ["update"];
+        println!("[scoop] 正在执行: {}", scoop_command_label(&metadata_args));
+        match run_scoop_inherit(&metadata_args) {
             Ok(true) => {
-                println!("[scoop] 正在执行: scoop update *");
-                match run_inherit("scoop", &["update", "*"]) {
+                let app_args = scoop_app_update_args();
+                println!("[scoop] 正在执行: {}", scoop_command_label(&app_args));
+                match run_scoop_inherit(&app_args) {
                     Ok(true) => println!("[scoop] 包升级完成."),
-                    _ => {
+                    Ok(false) => {
                         println!("[scoop] 包升级失败.");
+                        run_fail = true;
+                    }
+                    Err(err) => {
+                        println!("[scoop] 包升级失败: {err}");
                         run_fail = true;
                     }
                 }
             }
-            _ => {
-                println!("[scoop] 升级失败: scoop update 失败.");
+            Ok(false) => {
+                println!(
+                    "[scoop] 升级失败: {} 失败.",
+                    scoop_command_label(&metadata_args)
+                );
+                run_fail = true;
+            }
+            Err(err) => {
+                println!("[scoop] 升级失败: {err}");
                 run_fail = true;
             }
         }
@@ -288,6 +299,52 @@ pub fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
     }
     println!("{}", ok_text("所有已选升级项执行完成."));
     true
+}
+
+fn scoop_app_update_args() -> Vec<&'static str> {
+    #[cfg(windows)]
+    {
+        vec!["update", "*", "--global"]
+    }
+    #[cfg(not(windows))]
+    {
+        vec!["update", "*"]
+    }
+}
+
+fn scoop_command_label(args: &[&str]) -> String {
+    #[cfg(windows)]
+    let program = "gsudo scoop";
+    #[cfg(not(windows))]
+    let program = "scoop";
+
+    if args.is_empty() {
+        program.to_string()
+    } else {
+        format!("{program} {}", args.join(" "))
+    }
+}
+
+fn run_scoop_inherit(args: &[&str]) -> io::Result<bool> {
+    #[cfg(windows)]
+    {
+        if !command_exists("gsudo") {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Windows Scoop 更新需要 gsudo, 但未找到 gsudo",
+            ));
+        }
+
+        let mut elevated_args = Vec::with_capacity(args.len() + 1);
+        elevated_args.push("scoop");
+        elevated_args.extend_from_slice(args);
+        run_inherit("gsudo", &elevated_args)
+    }
+
+    #[cfg(not(windows))]
+    {
+        run_inherit("scoop", args)
+    }
 }
 
 fn run_pacman_upgrade(state: &AppState) -> bool {
