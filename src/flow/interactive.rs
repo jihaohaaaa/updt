@@ -4,6 +4,7 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io;
+use tokio::task::block_in_place;
 
 use crate::checks::{check_cargo_quiet, merge_check_result};
 use crate::command::run_inherit;
@@ -20,26 +21,29 @@ use crate::ui::{
     wait_tui_float_on_selection, wait_tui_message, wait_tui_message_on_checks,
 };
 
-fn run_inherit_outside_tui(
+async fn run_inherit_outside_tui(
     terminal: &mut AppTerminal,
     program: &str,
     args: &[&str],
 ) -> io::Result<bool> {
-    disable_raw_mode()?;
-    execute!(io::stdout(), LeaveAlternateScreen)?;
-    let command_result = run_inherit(program, args);
+    block_in_place(|| {
+        disable_raw_mode()?;
+        execute!(io::stdout(), LeaveAlternateScreen)?;
+        Ok::<_, io::Error>(())
+    })?;
+    let command_result = run_inherit(program, args).await;
 
     let mut restore_error = None;
-    if let Err(err) = enable_raw_mode() {
+    if let Err(err) = block_in_place(enable_raw_mode) {
         restore_error = Some(err);
     }
-    if let Err(err) = execute!(io::stdout(), EnterAlternateScreen)
+    if let Err(err) = block_in_place(|| execute!(io::stdout(), EnterAlternateScreen))
         && restore_error.is_none()
     {
         restore_error = Some(err);
     }
     if restore_error.is_none() {
-        let _ = terminal.clear();
+        let _ = block_in_place(|| terminal.clear());
     }
 
     if let Some(err) = restore_error {
@@ -48,11 +52,11 @@ fn run_inherit_outside_tui(
     command_result
 }
 
-pub fn offer_install_cargo_update_tui(
+pub async fn offer_install_cargo_update_tui(
     terminal: &mut AppTerminal,
     state: &mut AppState,
 ) -> io::Result<()> {
-    if !cargo_update_missing(state) {
+    if !cargo_update_missing(state).await {
         return Ok(());
     }
 
@@ -65,12 +69,14 @@ pub fn offer_install_cargo_update_tui(
             "".to_string(),
             "Enter/Y: 直连终端执行    N/q/Esc: 跳过".to_string(),
         ],
-    )?;
+    )
+    .await?;
     if !install {
         return Ok(());
     }
 
-    let install_result = run_inherit_outside_tui(terminal, "cargo", &["install", "cargo-update"]);
+    let install_result =
+        run_inherit_outside_tui(terminal, "cargo", &["install", "cargo-update"]).await;
     match install_result {
         Ok(true) => {
             state.cargo.has_updates = false;
@@ -79,15 +85,15 @@ pub fn offer_install_cargo_update_tui(
             state.cargo.updatable_packages.clear();
             let mut logs = Vec::new();
             let mut local = AppState::default();
-            parse_profile(&mut local);
-            check_cargo_quiet(&mut local, &mut logs);
+            parse_profile(&mut local).await;
+            check_cargo_quiet(&mut local, &mut logs).await;
             merge_check_result(state, "cargo", local);
 
             let mut lines = vec!["cargo-update 安装完成, 已重新检查 cargo.".to_string()];
             lines.extend(logs);
             lines.push("".to_string());
             lines.push("Enter: 继续    q/Esc: 继续".to_string());
-            let _ = wait_tui_message(terminal, "cargo-update", &lines)?;
+            let _ = wait_tui_message(terminal, "cargo-update", &lines).await?;
         }
         Ok(false) => {
             state.cargo.check_failed = true;
@@ -96,7 +102,7 @@ pub fn offer_install_cargo_update_tui(
                 "".to_string(),
                 "Enter: 继续    q/Esc: 继续".to_string(),
             ];
-            let _ = wait_tui_message(terminal, "cargo-update", &lines)?;
+            let _ = wait_tui_message(terminal, "cargo-update", &lines).await?;
         }
         Err(err) => {
             state.cargo.check_failed = true;
@@ -105,20 +111,20 @@ pub fn offer_install_cargo_update_tui(
                 "".to_string(),
                 "Enter: 继续    q/Esc: 继续".to_string(),
             ];
-            let _ = wait_tui_message(terminal, "cargo-update", &lines)?;
+            let _ = wait_tui_message(terminal, "cargo-update", &lines).await?;
         }
     }
     Ok(())
 }
 
-pub fn offer_install_cargo_update(state: &mut AppState) {
-    if !interactive_terminal() || !cargo_update_missing(state) {
+pub async fn offer_install_cargo_update(state: &mut AppState) {
+    if !interactive_terminal() || !cargo_update_missing(state).await {
         return;
     }
 
     print_section("cargo-update");
     println!("未安装 cargo-install-update, 无法检查已安装 crate 更新.");
-    match confirm_default_yes("是否执行 cargo install cargo-update") {
+    match confirm_default_yes("是否执行 cargo install cargo-update").await {
         Some(true) => {}
         Some(false) => {
             println!("{}", warn_text("已跳过 cargo-update 安装."));
@@ -131,7 +137,7 @@ pub fn offer_install_cargo_update(state: &mut AppState) {
     }
 
     println!("[cargo] 正在执行: cargo install cargo-update");
-    match run_inherit("cargo", &["install", "cargo-update"]) {
+    match run_inherit("cargo", &["install", "cargo-update"]).await {
         Ok(true) => {
             println!("[cargo] cargo-update 安装完成, 正在重新检查 cargo.");
             state.cargo.has_updates = false;
@@ -140,8 +146,8 @@ pub fn offer_install_cargo_update(state: &mut AppState) {
             state.cargo.updatable_packages.clear();
             let mut logs = Vec::new();
             let mut local = AppState::default();
-            parse_profile(&mut local);
-            check_cargo_quiet(&mut local, &mut logs);
+            parse_profile(&mut local).await;
+            check_cargo_quiet(&mut local, &mut logs).await;
             merge_check_result(state, "cargo", local);
             print_section(section_title("cargo"));
             for line in logs {
@@ -160,18 +166,18 @@ pub enum InteractiveResult {
     RunUpgrade(Vec<String>),
 }
 
-pub fn run_interactive_flow(
+pub async fn run_interactive_flow(
     state: &mut AppState,
     requested_updates: &[String],
     start_time: &str,
 ) -> io::Result<InteractiveResult> {
-    let _guard = TerminalGuard::enter()?;
+    let _guard = TerminalGuard::enter().await?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
     let targets = resolve_check_targets(state, requested_updates);
-    run_checks_tui(&mut terminal, state, &targets, start_time)?;
-    offer_install_cargo_update_tui(&mut terminal, state)?;
+    run_checks_tui(&mut terminal, state, &targets, start_time).await?;
+    offer_install_cargo_update_tui(&mut terminal, state).await?;
 
     let upgradable_targets = build_upgradable_targets(state);
     if upgradable_targets.is_empty() {
@@ -185,7 +191,8 @@ pub fn run_interactive_flow(
         lines.push("".to_string());
         lines.push("Enter/q/Esc: 退出".to_string());
         let _ =
-            wait_tui_message_on_checks(&mut terminal, state, &targets, start_time, "汇总", &lines)?;
+            wait_tui_message_on_checks(&mut terminal, state, &targets, start_time, "汇总", &lines)
+                .await?;
         return Ok(InteractiveResult::Exit(exit_code));
     }
 
@@ -197,7 +204,8 @@ pub fn run_interactive_flow(
                 &upgradable_targets,
                 &targets,
                 start_time,
-            )?
+            )
+            .await?
         } else {
             let (selected, skipped) =
                 resolve_cli_selection_quiet(requested_updates, &upgradable_targets);
@@ -210,7 +218,7 @@ pub fn run_interactive_flow(
                 );
                 lines.push("".to_string());
                 lines.push("Enter: 继续    q/Esc: 继续".to_string());
-                let _ = wait_tui_message(&mut terminal, "CLI 选择", &lines)?;
+                let _ = wait_tui_message(&mut terminal, "CLI 选择", &lines).await?;
             }
             selected
         };
@@ -224,7 +232,8 @@ pub fn run_interactive_flow(
                     "".to_string(),
                     "Enter/q/Esc: 退出".to_string(),
                 ],
-            )?;
+            )
+            .await?;
             return Ok(InteractiveResult::Exit(0));
         }
 
@@ -246,7 +255,7 @@ pub fn run_interactive_flow(
             title: "执行升级",
             lines: &lines,
         };
-        if wait_tui_float_on_selection(&mut terminal, &confirm_view)? {
+        if wait_tui_float_on_selection(&mut terminal, &confirm_view).await? {
             return Ok(InteractiveResult::RunUpgrade(selected_targets));
         }
 

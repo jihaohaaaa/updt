@@ -1,6 +1,6 @@
 [package]
 name = "updt"
-version = "0.1.38"
+version = "0.1.39"
 edition = "2024"
 description = "Cross-platform update helper for npm, cargo, rustup, fnm, scoop, Homebrew, paru, flatpak, pacman, and pkg."
 license = "MIT"
@@ -17,3 +17,4 @@ ratatui = "0.30"
 chrono = { version = "0.4", default-features = true }
 serde_json = "1.0"
 crossterm = "0.29"
+tokio = { version = "1", features = ["full"] }

@@ -1,11 +1,12 @@
 use std::env;
-use std::fs;
 use std::io;
 use std::path::PathBuf;
 
+use tokio::fs;
+
 use crate::state::TARGET_IDS;
 
-pub fn install_fish_completion() -> io::Result<PathBuf> {
+pub async fn install_fish_completion() -> io::Result<PathBuf> {
     let Some(home) = env::var_os("HOME") else {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -22,7 +23,7 @@ pub fn install_fish_completion() -> io::Result<PathBuf> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::other("invalid completion path"))?;
-    fs::create_dir_all(parent)?;
+    fs::create_dir_all(parent).await?;
 
     let targets = TARGET_IDS.join(" ");
     let script = format!(
@@ -35,6 +36,6 @@ complete -c updt -n '__fish_seen_subcommand_from update' -x -a \"$__updt_targets
 complete -c updt -n '__fish_seen_subcommand_from update' -s h -l help -d 'Print help'\n"
     );
 
-    fs::write(&path, script)?;
+    fs::write(&path, script).await?;
     Ok(path)
 }

@@ -1,20 +1,12 @@
-use crossterm::{
-    event::{self, Event, KeyEventKind},
-    style::Color as TermColor,
-};
-use ratatui::{
-    Terminal,
-    backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
-    style::{Color, Style},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
-};
+use crossterm::style::Color as TermColor;
+use ratatui::{Terminal, backend::CrosstermBackend};
 use std::collections::HashMap;
 use std::io;
 use std::process;
-use std::sync::mpsc::{self, TryRecvError};
-use std::thread;
 use std::time::Duration;
+use tokio::sync::mpsc::{self, error::TryRecvError};
+use tokio::task::{JoinSet, block_in_place};
+use tokio::time::sleep;
 
 use crate::checks::{CheckResult, merge_check_result, run_single_check};
 use crate::command::command_exists;
@@ -64,38 +56,35 @@ pub fn resolve_check_targets(state: &AppState, requested: &[String]) -> Vec<Stri
 
 fn spawn_check_workers(
     targets: &[String],
-) -> (
-    Vec<thread::JoinHandle<CheckResult>>,
-    mpsc::Receiver<CheckEvent>,
-) {
-    let mut handles = Vec::new();
-    let (tx, rx) = mpsc::channel::<CheckEvent>();
+) -> (JoinSet<CheckResult>, mpsc::UnboundedReceiver<CheckEvent>) {
+    let mut set = JoinSet::new();
+    let (tx, rx) = mpsc::unbounded_channel::<CheckEvent>();
     for target in targets {
         let t = target.clone();
-        let tx_thread = tx.clone();
-        handles.push(thread::spawn(move || {
-            let _ = tx_thread.send(CheckEvent::Started(t.clone()));
-            let result = run_single_check(&t);
+        let tx_task = tx.clone();
+        set.spawn(async move {
+            let _ = tx_task.send(CheckEvent::Started(t.clone()));
+            let result = run_single_check(&t).await;
             let (kind, summary) = summarize_target_status(&t, &result.state);
-            let _ = tx_thread.send(CheckEvent::Finished {
+            let _ = tx_task.send(CheckEvent::Finished {
                 target: t,
                 kind,
                 summary,
             });
             result
-        }));
+        });
     }
     drop(tx);
-    (handles, rx)
+    (set, rx)
 }
 
-fn finish_check_workers(
+async fn finish_check_workers(
     state: &mut AppState,
-    handles: Vec<thread::JoinHandle<CheckResult>>,
+    mut handles: JoinSet<CheckResult>,
 ) -> HashMap<String, Vec<String>> {
     let mut logs_map: HashMap<String, Vec<String>> = HashMap::new();
-    for h in handles {
-        if let Ok(result) = h.join() {
+    while let Some(joined) = handles.join_next().await {
+        if let Ok(result) = joined {
             merge_check_result(state, &result.target, result.state);
             logs_map.insert(result.target, result.logs);
         }
@@ -103,9 +92,8 @@ fn finish_check_workers(
     logs_map
 }
 
-pub fn run_checks_plain(state: &mut AppState, targets: &[String]) {
-    let mut handles = Vec::new();
-    let (tx, rx) = mpsc::channel::<String>();
+pub async fn run_checks_plain(state: &mut AppState, targets: &[String]) {
+    let (handles, mut rx) = spawn_check_workers(targets);
     println!(
         "{} {}",
         color_bold("[check]", TermColor::Yellow),
@@ -115,24 +103,26 @@ pub fn run_checks_plain(state: &mut AppState, targets: &[String]) {
             .collect::<Vec<_>>()
             .join(", ")
     );
-    for target in targets {
-        let t = target.clone();
-        let tx_thread = tx.clone();
-        handles.push(thread::spawn(move || {
-            let _ = tx_thread.send(log_pkg_line(&t, "开始检查...", MsgKind::Info));
-            let result = run_single_check(&t);
-            let (kind, summary) = summarize_target_status(&t, &result.state);
-            let _ = tx_thread.send(log_pkg_line(&t, &format!("检查完成: {summary}"), kind));
-            result
-        }));
-    }
-    drop(tx);
 
-    while let Ok(line) = rx.recv() {
-        println!("{line}");
+    while let Some(line) = rx.recv().await {
+        match line {
+            CheckEvent::Started(target) => {
+                println!("{}", log_pkg_line(&target, "开始检查...", MsgKind::Info));
+            }
+            CheckEvent::Finished {
+                target,
+                kind,
+                summary,
+            } => {
+                println!(
+                    "{}",
+                    log_pkg_line(&target, &format!("检查完成: {summary}"), kind)
+                );
+            }
+        }
     }
 
-    let logs_map = finish_check_workers(state, handles);
+    let logs_map = finish_check_workers(state, handles).await;
 
     for target in targets {
         print_section(section_title(target));
@@ -144,7 +134,7 @@ pub fn run_checks_plain(state: &mut AppState, targets: &[String]) {
     }
 }
 
-pub fn run_checks_tui(
+pub async fn run_checks_tui(
     terminal: &mut AppTerminal,
     state: &mut AppState,
     targets: &[String],
@@ -160,7 +150,7 @@ pub fn run_checks_tui(
         })
         .collect();
     let mut done_count = 0usize;
-    let (handles, rx) = spawn_check_workers(targets);
+    let (handles, mut rx) = spawn_check_workers(targets);
 
     loop {
         loop {
@@ -198,72 +188,101 @@ pub fn run_checks_tui(
             }
         }
 
-        terminal.draw(|frame| {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(5), Constraint::Min(1)])
-                .split(frame.area());
-            let header = Paragraph::new(format!(
-                "开始时间: {start_time}\n系统策略: {}\n进度: {done_count}/{}",
-                profile_name(state.system_profile),
-                rows.len()
-            ))
-            .block(Block::default().title("检查可升级项").borders(Borders::ALL));
-            frame.render_widget(header, chunks[0]);
+        tokio::task::block_in_place(|| {
+            terminal.draw(|frame| {
+                let chunks = ratatui::layout::Layout::default()
+                    .direction(ratatui::layout::Direction::Vertical)
+                    .constraints([
+                        ratatui::layout::Constraint::Length(5),
+                        ratatui::layout::Constraint::Min(1),
+                    ])
+                    .split(frame.area());
+                let header = ratatui::widgets::Paragraph::new(format!(
+                    "开始时间: {start_time}\n系统策略: {}\n进度: {done_count}/{}",
+                    profile_name(state.system_profile),
+                    rows.len()
+                ))
+                .block(
+                    ratatui::widgets::Block::default()
+                        .title("检查可升级项")
+                        .borders(ratatui::widgets::Borders::ALL),
+                );
+                frame.render_widget(header, chunks[0]);
 
-            let items: Vec<ListItem> = rows
-                .iter()
-                .map(|row| {
-                    let style = match row.kind {
-                        MsgKind::Info => Style::default().fg(Color::Cyan),
-                        MsgKind::Ok => Style::default().fg(Color::Green),
-                        MsgKind::Warn => Style::default().fg(Color::Yellow),
-                    };
-                    ListItem::new(format!("{:<10} {}", target_label(&row.target), row.text))
-                        .style(style)
-                })
-                .collect();
-            let list = List::new(items).block(Block::default().title("目标").borders(Borders::ALL));
-            frame.render_widget(list, chunks[1]);
+                let items: Vec<ratatui::widgets::ListItem> =
+                    rows.iter()
+                        .map(|row| {
+                            let style = match row.kind {
+                                MsgKind::Info => {
+                                    ratatui::style::Style::default().fg(ratatui::style::Color::Cyan)
+                                }
+                                MsgKind::Ok => ratatui::style::Style::default()
+                                    .fg(ratatui::style::Color::Green),
+                                MsgKind::Warn => ratatui::style::Style::default()
+                                    .fg(ratatui::style::Color::Yellow),
+                            };
+                            ratatui::widgets::ListItem::new(format!(
+                                "{:<10} {}",
+                                target_label(&row.target),
+                                row.text
+                            ))
+                            .style(style)
+                        })
+                        .collect();
+                let list = ratatui::widgets::List::new(items).block(
+                    ratatui::widgets::Block::default()
+                        .title("目标")
+                        .borders(ratatui::widgets::Borders::ALL),
+                );
+                frame.render_widget(list, chunks[1]);
+            })
         })?;
 
         if done_count >= rows.len() {
             break;
         }
-        if event::poll(Duration::from_millis(20))?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
+        let key = block_in_place(|| {
+            if crossterm::event::poll(Duration::from_millis(20))? {
+                if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
+                    return Ok::<_, io::Error>(Some(key));
+                }
+            }
+            Ok(None)
+        })?;
+        if let Some(key) = key
+            && key.kind == crossterm::event::KeyEventKind::Press
             && is_ctrl_exit_key(&key)
         {
             return Err(interrupted_error());
         }
-        thread::sleep(Duration::from_millis(80));
+        sleep(Duration::from_millis(80)).await;
     }
 
-    let _ = finish_check_workers(state, handles);
-    thread::sleep(Duration::from_millis(500));
+    let _ = finish_check_workers(state, handles).await;
+    sleep(Duration::from_millis(500)).await;
     Ok(())
 }
 
-pub fn run_checks(state: &mut AppState, requested: &[String], start_time: &str) {
+pub async fn run_checks(state: &mut AppState, requested: &[String], start_time: &str) {
     let targets = resolve_check_targets(state, requested);
     if interactive_terminal() {
-        let tui_result = (|| {
-            let _guard = TerminalGuard::enter()?;
+        let tui_result = async {
+            let _guard = TerminalGuard::enter().await?;
             let backend = CrosstermBackend::new(io::stdout());
             let mut terminal = Terminal::new(backend)?;
-            run_checks_tui(&mut terminal, state, &targets, start_time)
-        })();
+            run_checks_tui(&mut terminal, state, &targets, start_time).await
+        }
+        .await;
         if let Err(err) = tui_result {
             if err.kind() == io::ErrorKind::Interrupted {
                 print_exit_signal_message();
                 process::exit(0);
             }
             eprintln!("[ui] TUI 初始化失败, 自动回退文本输出: {err}");
-            run_checks_plain(state, &targets);
+            run_checks_plain(state, &targets).await;
         }
     } else {
-        run_checks_plain(state, &targets);
+        run_checks_plain(state, &targets).await;
     }
 }
 
@@ -287,10 +306,10 @@ pub fn any_check_failed(state: &AppState) -> bool {
     })
 }
 
-pub fn cargo_update_missing(state: &AppState) -> bool {
+pub async fn cargo_update_missing(state: &AppState) -> bool {
     state.enable.cargo
         && state.cargo.installed
         && !state.cargo.updater_installed
-        && command_exists("cargo")
-        && !command_exists("cargo-install-update")
+        && command_exists("cargo").await
+        && !command_exists("cargo-install-update").await
 }

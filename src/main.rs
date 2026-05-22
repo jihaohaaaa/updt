@@ -30,11 +30,12 @@ use crate::selection::{resolve_cli_selection, select_targets, select_targets_pro
 use crate::state::{AppState, profile_name};
 use crate::upgrade::upgrade_selected;
 
-fn main() {
+#[tokio::main(flavor = "multi_thread")]
+async fn main() {
     let cli = parse_cli();
 
     if matches!(cli, CliCommand::Fish) {
-        match install_fish_completion() {
+        match install_fish_completion().await {
             Ok(path) => {
                 println!("fish completion 已写入: {}", path.display());
                 process::exit(0);
@@ -47,7 +48,7 @@ fn main() {
     }
 
     let mut state = AppState::default();
-    parse_profile(&mut state);
+    parse_profile(&mut state).await;
     let start_time = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
     let requested_updates = match &cli {
@@ -57,10 +58,10 @@ fn main() {
 
     let mut force_text_flow = false;
     if interactive_terminal() {
-        match run_interactive_flow(&mut state, &requested_updates, &start_time) {
+        match run_interactive_flow(&mut state, &requested_updates, &start_time).await {
             Ok(InteractiveResult::Exit(code)) => process::exit(code),
             Ok(InteractiveResult::RunUpgrade(selected_targets)) => {
-                if upgrade_selected(&state, &selected_targets) {
+                if upgrade_selected(&state, &selected_targets).await {
                     process::exit(0);
                 }
                 process::exit(1);
@@ -92,11 +93,11 @@ fn main() {
 
     if force_text_flow {
         let targets = resolve_check_targets(&state, &requested_updates);
-        run_checks_plain(&mut state, &targets);
+        run_checks_plain(&mut state, &targets).await;
     } else {
-        run_checks(&mut state, &requested_updates, &start_time);
+        run_checks(&mut state, &requested_updates, &start_time).await;
     }
-    offer_install_cargo_update(&mut state);
+    offer_install_cargo_update(&mut state).await;
 
     let upgradable_targets = build_upgradable_targets(&state);
 
@@ -115,9 +116,9 @@ fn main() {
     }
     let selected_targets = if requested_updates.is_empty() {
         if force_text_flow {
-            select_targets_prompt(&state, &upgradable_targets)
+            select_targets_prompt(&state, &upgradable_targets).await
         } else {
-            select_targets(&state, &upgradable_targets)
+            select_targets(&state, &upgradable_targets).await
         }
     } else {
         resolve_cli_selection(&requested_updates, &upgradable_targets)
@@ -128,7 +129,7 @@ fn main() {
         process::exit(0);
     }
 
-    if upgrade_selected(&state, &selected_targets) {
+    if upgrade_selected(&state, &selected_targets).await {
         process::exit(0);
     }
     process::exit(1);

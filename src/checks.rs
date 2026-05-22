@@ -8,7 +8,7 @@ use crate::parse::{
     extract_marker_count, first_json_payload, first_token, parse_cargo_list,
     parse_fnm_version_token, parse_scoop_status_output,
 };
-use crate::parse_profile;
+use crate::profile::parse_profile;
 use crate::state::AppState;
 
 pub struct CheckResult {
@@ -16,31 +16,13 @@ pub struct CheckResult {
     pub state: AppState,
     pub logs: Vec<String>,
 }
-type CheckRunner = fn(&mut AppState, &mut Vec<String>);
 
-fn check_runner_for_target(target: &str) -> Option<CheckRunner> {
-    match target {
-        "brew" => Some(check_brew_quiet),
-        "npm" => Some(check_npm_quiet),
-        "cargo" => Some(check_cargo_quiet),
-        "nvim" => Some(check_nvim_quiet),
-        "rustup" => Some(check_rustup_quiet),
-        "fnm" => Some(check_fnm_quiet),
-        "scoop" => Some(check_scoop_quiet),
-        "paru" => Some(check_paru_quiet),
-        "flatpak" => Some(check_flatpak_quiet),
-        "pacman" => Some(check_pacman_quiet),
-        "pkg" => Some(check_pkg_quiet),
-        _ => None,
-    }
-}
-
-fn check_brew_quiet(state: &mut AppState, logs: &mut Vec<String>) {
+async fn check_brew_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     if !state.enable.brew {
         logs.push(log_pkg_line("brew", "按系统策略跳过.", MsgKind::Warn));
         return;
     }
-    if !command_exists("brew") {
+    if !command_exists("brew").await {
         logs.push(log_pkg_line("brew", "未安装, 跳过.", MsgKind::Warn));
         return;
     }
@@ -50,7 +32,8 @@ fn check_brew_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         "正在检查可升级项 (brew outdated --greedy --json=v2)...",
         MsgKind::Info,
     ));
-    let Ok((status, output)) = run_capture("brew", &["outdated", "--greedy", "--json=v2"]) else {
+    let Ok((status, output)) = run_capture("brew", &["outdated", "--greedy", "--json=v2"]).await
+    else {
         state.brew.check_failed = true;
         logs.push(log_pkg_line(
             "brew",
@@ -122,12 +105,12 @@ fn check_brew_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     }
 }
 
-fn check_npm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
+async fn check_npm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     if !state.enable.npm {
         logs.push(log_pkg_line("npm", "按系统策略跳过.", MsgKind::Warn));
         return;
     }
-    if !command_exists("npm") {
+    if !command_exists("npm").await {
         logs.push(log_pkg_line("npm", "未安装, 跳过.", MsgKind::Warn));
         return;
     }
@@ -137,7 +120,7 @@ fn check_npm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         "正在检查全局包更新 (npm outdated --json --global)...",
         MsgKind::Info,
     ));
-    let Ok((status, output)) = run_capture("npm", &["outdated", "--json", "--global"]) else {
+    let Ok((status, output)) = run_capture("npm", &["outdated", "--json", "--global"]).await else {
         state.npm.check_failed = true;
         logs.push(log_pkg_line(
             "npm",
@@ -193,17 +176,17 @@ fn check_npm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     }
 }
 
-pub fn check_cargo_quiet(state: &mut AppState, logs: &mut Vec<String>) {
+pub async fn check_cargo_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     if !state.enable.cargo {
         logs.push(log_pkg_line("cargo", "按系统策略跳过.", MsgKind::Warn));
         return;
     }
-    if !command_exists("cargo") {
+    if !command_exists("cargo").await {
         logs.push(log_pkg_line("cargo", "未安装, 跳过.", MsgKind::Warn));
         return;
     }
     state.cargo.installed = true;
-    if !command_exists("cargo-install-update") {
+    if !command_exists("cargo-install-update").await {
         logs.push(log_pkg_line(
             "cargo",
             "未安装 cargo-install-update, 跳过.",
@@ -217,7 +200,7 @@ pub fn check_cargo_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         "正在检查已安装 crate 更新 (cargo install-update --locked --list)...",
         MsgKind::Info,
     ));
-    let Ok((status, output)) = run_cargo_install_update_capture(&["--list"]) else {
+    let Ok((status, output)) = run_cargo_install_update_capture(&["--list"]).await else {
         state.cargo.check_failed = true;
         logs.push(log_pkg_line(
             "cargo",
@@ -256,12 +239,12 @@ pub fn check_cargo_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     }
 }
 
-fn check_rustup_quiet(state: &mut AppState, logs: &mut Vec<String>) {
+async fn check_rustup_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     if !state.enable.rustup {
         logs.push(log_pkg_line("rustup", "按系统策略跳过.", MsgKind::Warn));
         return;
     }
-    if !command_exists("rustup") {
+    if !command_exists("rustup").await {
         logs.push(log_pkg_line("rustup", "未安装, 跳过.", MsgKind::Warn));
         return;
     }
@@ -271,7 +254,7 @@ fn check_rustup_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         "正在检查 toolchain 更新 (rustup check --no-self-update)...",
         MsgKind::Info,
     ));
-    let Ok((status, output)) = run_capture("rustup", &["check", "--no-self-update"]) else {
+    let Ok((status, output)) = run_capture("rustup", &["check", "--no-self-update"]).await else {
         state.rustup.check_failed = true;
         logs.push(log_pkg_line(
             "rustup",
@@ -305,12 +288,12 @@ fn check_rustup_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     }
 }
 
-fn check_fnm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
+async fn check_fnm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     if !state.enable.fnm {
         logs.push(log_pkg_line("fnm", "按系统策略跳过.", MsgKind::Warn));
         return;
     }
-    if !command_exists("fnm") {
+    if !command_exists("fnm").await {
         logs.push(log_pkg_line("fnm", "未安装, 跳过.", MsgKind::Warn));
         return;
     }
@@ -321,7 +304,7 @@ fn check_fnm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         MsgKind::Info,
     ));
 
-    let Ok((list_status, list_output)) = run_capture("fnm", &["list"]) else {
+    let Ok((list_status, list_output)) = run_capture("fnm", &["list"]).await else {
         state.fnm.check_failed = true;
         logs.push(log_pkg_line(
             "fnm",
@@ -345,7 +328,7 @@ fn check_fnm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         .filter_map(parse_fnm_version_token)
         .collect::<Vec<_>>();
 
-    let Ok((latest_status, latest_output)) = run_capture("fnm", &["list-remote", "--latest"])
+    let Ok((latest_status, latest_output)) = run_capture("fnm", &["list-remote", "--latest"]).await
     else {
         state.fnm.check_failed = true;
         logs.push(log_pkg_line(
@@ -365,7 +348,8 @@ fn check_fnm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     }
 
-    let Ok((lts_status, lts_output)) = run_capture("fnm", &["list-remote", "--lts", "--latest"])
+    let Ok((lts_status, lts_output)) =
+        run_capture("fnm", &["list-remote", "--lts", "--latest"]).await
     else {
         state.fnm.check_failed = true;
         logs.push(log_pkg_line(
@@ -434,12 +418,12 @@ fn check_fnm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     }
 }
 
-fn check_scoop_quiet(state: &mut AppState, logs: &mut Vec<String>) {
+async fn check_scoop_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     if !state.enable.scoop {
         logs.push(log_pkg_line("scoop", "按系统策略跳过.", MsgKind::Warn));
         return;
     }
-    if !command_exists("scoop") {
+    if !command_exists("scoop").await {
         logs.push(log_pkg_line("scoop", "未安装, 跳过.", MsgKind::Warn));
         return;
     }
@@ -450,7 +434,7 @@ fn check_scoop_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         MsgKind::Info,
     ));
 
-    let Ok((status, output)) = run_capture("scoop", &["status"]) else {
+    let Ok((status, output)) = run_capture("scoop", &["status"]).await else {
         state.scoop.check_failed = true;
         logs.push(log_pkg_line(
             "scoop",
@@ -478,8 +462,8 @@ fn check_scoop_quiet(state: &mut AppState, logs: &mut Vec<String>) {
             "Scoop/桶元数据过期, 正在刷新后重新检查 (scoop update --quiet)...",
             MsgKind::Warn,
         ));
-        match run_capture("scoop", &["update", "--quiet"]) {
-            Ok((0, _)) => match run_capture("scoop", &["status", "--local"]) {
+        match run_capture("scoop", &["update", "--quiet"]).await {
+            Ok((0, _)) => match run_capture("scoop", &["status", "--local"]).await {
                 Ok((0, refreshed_output)) => {
                     parsed = parse_scoop_status_output(&refreshed_output);
                     metadata_outdated = parsed.metadata_outdated;
@@ -529,12 +513,12 @@ fn check_scoop_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     }
 }
 
-fn check_paru_quiet(state: &mut AppState, logs: &mut Vec<String>) {
+async fn check_paru_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     if !state.enable.paru {
         logs.push(log_pkg_line("paru", "按系统策略跳过.", MsgKind::Warn));
         return;
     }
-    if !command_exists("paru") {
+    if !command_exists("paru").await {
         logs.push(log_pkg_line("paru", "未安装, 跳过.", MsgKind::Warn));
         return;
     }
@@ -544,7 +528,7 @@ fn check_paru_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         "正在检查 AUR 可升级项 (paru -Qua)...",
         MsgKind::Info,
     ));
-    let Ok((status, output)) = run_capture("paru", &["-Qua"]) else {
+    let Ok((status, output)) = run_capture("paru", &["-Qua"]).await else {
         state.paru.check_failed = true;
         logs.push(log_pkg_line(
             "paru",
@@ -556,7 +540,6 @@ fn check_paru_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     let trimmed_output = output.trim();
     if status != 0 {
         if status == 1 && trimmed_output.is_empty() {
-            // paru -Qua 在无更新时返回 1 且无输出, 这不是失败.
             logs.push(log_pkg_line("paru", "AUR 包已是最新.", MsgKind::Ok));
             return;
         }
@@ -588,12 +571,12 @@ fn check_paru_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     }
 }
 
-fn check_flatpak_quiet(state: &mut AppState, logs: &mut Vec<String>) {
+async fn check_flatpak_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     if !state.enable.flatpak {
         logs.push(log_pkg_line("flatpak", "按系统策略跳过.", MsgKind::Warn));
         return;
     }
-    if !command_exists("flatpak") {
+    if !command_exists("flatpak").await {
         logs.push(log_pkg_line("flatpak", "未安装, 跳过.", MsgKind::Warn));
         return;
     }
@@ -606,7 +589,9 @@ fn check_flatpak_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     let Ok((status, output)) = run_capture(
         "flatpak",
         &["remote-ls", "--updates", "--columns=application"],
-    ) else {
+    )
+    .await
+    else {
         state.flatpak.check_failed = true;
         logs.push(log_pkg_line(
             "flatpak",
@@ -641,21 +626,25 @@ fn check_flatpak_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     }
 }
 
-fn check_pacman_quiet(state: &mut AppState, logs: &mut Vec<String>) {
+async fn check_pacman_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     if !state.enable.pacman {
         logs.push(log_pkg_line("pacman", "按系统策略跳过.", MsgKind::Warn));
         return;
     }
-    if !command_exists("pacman") {
+    if !command_exists("pacman").await {
         logs.push(log_pkg_line("pacman", "未安装, 跳过.", MsgKind::Warn));
         return;
     }
     state.pacman.installed = true;
-    let use_checkupdates = command_exists("checkupdates");
+    let use_checkupdates = command_exists("checkupdates").await;
     let (status, output) = if use_checkupdates {
-        run_capture("checkupdates", &[]).unwrap_or((-1, String::new()))
+        run_capture("checkupdates", &[])
+            .await
+            .unwrap_or((-1, String::new()))
     } else {
-        run_capture("pacman", &["-Qu"]).unwrap_or((-1, String::new()))
+        run_capture("pacman", &["-Qu"])
+            .await
+            .unwrap_or((-1, String::new()))
     };
     if status != 0 {
         let no_updates = if use_checkupdates {
@@ -691,12 +680,12 @@ fn check_pacman_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     }
 }
 
-fn check_pkg_quiet(state: &mut AppState, logs: &mut Vec<String>) {
+async fn check_pkg_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     if !state.enable.pkg {
         logs.push(log_pkg_line("pkg", "按系统策略跳过.", MsgKind::Warn));
         return;
     }
-    if !command_exists("pkg") {
+    if !command_exists("pkg").await {
         logs.push(log_pkg_line("pkg", "未安装, 跳过.", MsgKind::Warn));
         return;
     }
@@ -707,7 +696,7 @@ fn check_pkg_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         "正在检查可升级项 (apt list --upgradable)...",
         MsgKind::Info,
     ));
-    let Ok((status, output)) = run_capture("apt", &["list", "--upgradable"]) else {
+    let Ok((status, output)) = run_capture("apt", &["list", "--upgradable"]).await else {
         state.pkg.check_failed = true;
         logs.push(log_pkg_line(
             "pkg",
@@ -755,12 +744,12 @@ fn check_pkg_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     }
 }
 
-fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
+async fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     if !state.enable.nvim {
         logs.push(log_pkg_line("nvim", "按系统策略跳过.", MsgKind::Warn));
         return;
     }
-    if !command_exists("nvim") {
+    if !command_exists("nvim").await {
         logs.push(log_pkg_line("nvim", "未安装, 跳过.", MsgKind::Warn));
         return;
     }
@@ -774,7 +763,9 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     let Ok((lazy_status, lazy_out)) = run_nvim_headless_capture(&[
         "+lua local ok=pcall(require,'lazy'); print(ok and 'UPDT_LAZY_OK' or 'UPDT_LAZY_MISSING')",
         "+qa",
-    ]) else {
+    ])
+    .await
+    else {
         state.nvim.check_failed = true;
         logs.push(log_pkg_line(
             "nvim",
@@ -797,7 +788,9 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     let Ok((mason_status, mason_out)) = run_nvim_headless_capture(&[
         "+lua local ok=pcall(require,'mason'); print(ok and 'UPDT_MASON_OK' or 'UPDT_MASON_MISSING')",
         "+qa",
-    ]) else {
+    ])
+    .await
+    else {
         state.nvim.check_failed = true;
         logs.push(log_pkg_line(
             "nvim",
@@ -830,7 +823,9 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         let Ok((lazy_count_status, lazy_count_out)) = run_nvim_headless_capture(&[
             "+lua local checker=require('lazy.manage.checker'); checker.check({show=false}); vim.wait(120000, function() return not checker.running end, 200); local n=0; for _ in pairs(checker.updated or {}) do n=n+1 end; print('UPDT_LAZY_COUNT='..n)",
             "+qa",
-        ]) else {
+        ])
+        .await
+        else {
             state.nvim.check_failed = true;
             logs.push(log_pkg_line(
                 "nvim",
@@ -870,7 +865,9 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         let Ok((mason_count_status, mason_count_out)) = run_nvim_headless_capture(&[
             "+lua local reg=require('mason-registry'); local ok,pkgs=pcall(reg.get_installed_packages); if not ok then print('UPDT_MASON_COUNT=0') return end; local n=0; for _,p in ipairs(pkgs) do local ok_i,iv=pcall(p.get_installed_version,p); local ok_l,lv=pcall(p.get_latest_version,p); if ok_i and ok_l and tostring(iv)~=tostring(lv) then n=n+1 end end; print('UPDT_MASON_COUNT='..n)",
             "+qa",
-        ]) else {
+        ])
+        .await
+        else {
             state.nvim.check_failed = true;
             logs.push(log_pkg_line(
                 "nvim",
@@ -922,12 +919,23 @@ fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     }
 }
 
-pub fn run_single_check(target: &str) -> CheckResult {
+pub async fn run_single_check(target: &str) -> CheckResult {
     let mut local = AppState::default();
     let mut logs = Vec::new();
-    parse_profile(&mut local);
-    if let Some(run) = check_runner_for_target(target) {
-        run(&mut local, &mut logs);
+    parse_profile(&mut local).await;
+    match target {
+        "brew" => check_brew_quiet(&mut local, &mut logs).await,
+        "npm" => check_npm_quiet(&mut local, &mut logs).await,
+        "cargo" => check_cargo_quiet(&mut local, &mut logs).await,
+        "nvim" => check_nvim_quiet(&mut local, &mut logs).await,
+        "rustup" => check_rustup_quiet(&mut local, &mut logs).await,
+        "fnm" => check_fnm_quiet(&mut local, &mut logs).await,
+        "scoop" => check_scoop_quiet(&mut local, &mut logs).await,
+        "paru" => check_paru_quiet(&mut local, &mut logs).await,
+        "flatpak" => check_flatpak_quiet(&mut local, &mut logs).await,
+        "pacman" => check_pacman_quiet(&mut local, &mut logs).await,
+        "pkg" => check_pkg_quiet(&mut local, &mut logs).await,
+        _ => {}
     }
     CheckResult {
         target: target.to_string(),

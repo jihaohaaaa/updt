@@ -1,26 +1,28 @@
 use std::env;
-use std::fs;
 use std::io;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
-pub fn command_exists(name: &str) -> bool {
-    resolve_command_path(name).is_some()
+use tokio::fs;
+use tokio::process::Command;
+
+pub async fn command_exists(name: &str) -> bool {
+    resolve_command_path(name).await.is_some()
 }
 
-pub fn resolve_command_path(name: &str) -> Option<PathBuf> {
+pub async fn resolve_command_path(name: &str) -> Option<PathBuf> {
     if name.contains('/') || name.contains('\\') {
         let path = Path::new(name);
-        return is_executable(path).then(|| path.to_path_buf());
+        return is_executable(path).await.then(|| path.to_path_buf());
     }
 
     let candidates = command_name_candidates(name);
     for dir in env::split_paths(&env::var_os("PATH")?) {
         for candidate_name in &candidates {
             let candidate = dir.join(candidate_name);
-            if is_executable(&candidate) {
+            if is_executable(&candidate).await {
                 return Some(candidate);
             }
         }
@@ -55,12 +57,14 @@ fn command_name_candidates(name: &str) -> Vec<String> {
     vec![name.to_string()]
 }
 
-fn command_program(program: &str) -> PathBuf {
-    resolve_command_path(program).unwrap_or_else(|| PathBuf::from(program))
+async fn command_program(program: &str) -> PathBuf {
+    resolve_command_path(program)
+        .await
+        .unwrap_or_else(|| PathBuf::from(program))
 }
 
-fn command(program: &str) -> Command {
-    let program_path = command_program(program);
+async fn command(program: &str) -> Command {
+    let program_path = command_program(program).await;
     #[cfg(windows)]
     {
         if program_path
@@ -76,8 +80,8 @@ fn command(program: &str) -> Command {
     Command::new(program_path)
 }
 
-fn is_executable(path: &Path) -> bool {
-    let Ok(meta) = fs::metadata(path) else {
+async fn is_executable(path: &Path) -> bool {
+    let Ok(meta) = fs::metadata(path).await else {
         return false;
     };
     if !meta.is_file() {
@@ -93,8 +97,8 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
-pub fn run_capture(program: &str, args: &[&str]) -> io::Result<(i32, String)> {
-    let output = command(program).args(args).output()?;
+pub async fn run_capture(program: &str, args: &[&str]) -> io::Result<(i32, String)> {
+    let output = command(program).await.args(args).output().await?;
     let code = output.status.code().unwrap_or(-1);
     let mut text = String::new();
     text.push_str(&String::from_utf8_lossy(&output.stdout));
@@ -102,36 +106,38 @@ pub fn run_capture(program: &str, args: &[&str]) -> io::Result<(i32, String)> {
     Ok((code, text))
 }
 
-pub fn run_inherit(program: &str, args: &[&str]) -> io::Result<bool> {
+pub async fn run_inherit(program: &str, args: &[&str]) -> io::Result<bool> {
     let status = command(program)
+        .await
         .args(args)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
-        .status()?;
+        .status()
+        .await?;
     Ok(status.success())
 }
 
-pub fn run_cargo_install_update_capture(args: &[&str]) -> io::Result<(i32, String)> {
+pub async fn run_cargo_install_update_capture(args: &[&str]) -> io::Result<(i32, String)> {
     let mut proxy_args = vec!["install-update", "--locked"];
     proxy_args.extend_from_slice(args);
-    run_capture("cargo-install-update", &proxy_args)
+    run_capture("cargo-install-update", &proxy_args).await
 }
 
-pub fn run_cargo_install_update_inherit(args: &[&str]) -> io::Result<bool> {
+pub async fn run_cargo_install_update_inherit(args: &[&str]) -> io::Result<bool> {
     let mut proxy_args = vec!["install-update", "--locked"];
     proxy_args.extend_from_slice(args);
-    run_inherit("cargo-install-update", &proxy_args)
+    run_inherit("cargo-install-update", &proxy_args).await
 }
 
-pub fn run_nvim_headless_capture(args: &[&str]) -> io::Result<(i32, String)> {
+pub async fn run_nvim_headless_capture(args: &[&str]) -> io::Result<(i32, String)> {
     let mut all_args = vec!["--headless"];
     all_args.extend_from_slice(args);
-    run_capture("nvim", &all_args)
+    run_capture("nvim", &all_args).await
 }
 
-pub fn run_nvim_headless_inherit(args: &[&str]) -> io::Result<bool> {
+pub async fn run_nvim_headless_inherit(args: &[&str]) -> io::Result<bool> {
     let mut all_args = vec!["--headless"];
     all_args.extend_from_slice(args);
-    run_inherit("nvim", &all_args)
+    run_inherit("nvim", &all_args).await
 }

@@ -13,6 +13,7 @@ use ratatui::{
 };
 use std::io;
 use std::time::Duration;
+use tokio::task::block_in_place;
 
 use crate::output::MsgKind;
 use crate::parse::strip_ansi_control_sequences;
@@ -28,10 +29,12 @@ pub struct TerminalGuard {
 }
 
 impl TerminalGuard {
-    pub fn enter() -> io::Result<Self> {
-        enable_raw_mode()?;
-        execute!(io::stdout(), EnterAlternateScreen)?;
-        Ok(Self { active: true })
+    pub async fn enter() -> io::Result<Self> {
+        block_in_place(|| {
+            enable_raw_mode()?;
+            execute!(io::stdout(), EnterAlternateScreen)?;
+            Ok(Self { active: true })
+        })
     }
 }
 
@@ -53,6 +56,25 @@ pub fn is_ctrl_exit_key(key: &KeyEvent) -> bool {
         return false;
     }
     matches!(key.code, KeyCode::Char('c') | KeyCode::Char('d'))
+}
+
+async fn draw_terminal<F>(terminal: &mut AppTerminal, mut render: F) -> io::Result<()>
+where
+    F: FnMut(&mut ratatui::Frame<'_>),
+{
+    block_in_place(|| terminal.draw(|frame| render(frame)).map(|_| ()))
+}
+
+async fn read_key_event(timeout: Duration) -> io::Result<Option<KeyEvent>> {
+    block_in_place(|| {
+        if !event::poll(timeout)? {
+            return Ok(None);
+        }
+        let Event::Key(key) = event::read()? else {
+            return Ok(None);
+        };
+        Ok(Some(key))
+    })
 }
 
 pub fn summarize_target_status(target: &str, state: &AppState) -> (MsgKind, &'static str) {
@@ -80,15 +102,15 @@ fn target_row_index(upgradable_targets: &[String], target_idx: usize, state: &Ap
         .sum()
 }
 
-pub fn select_targets_tui(
+pub async fn select_targets_tui(
     terminal: &mut AppTerminal,
     state: &AppState,
     upgradable_targets: &[String],
 ) -> io::Result<Vec<String>> {
-    select_targets_tui_with_checks(terminal, state, upgradable_targets, &[], "")
+    select_targets_tui_with_checks(terminal, state, upgradable_targets, &[], "").await
 }
 
-pub fn select_targets_tui_with_checks(
+pub async fn select_targets_tui_with_checks(
     terminal: &mut AppTerminal,
     state: &AppState,
     upgradable_targets: &[String],
@@ -103,7 +125,7 @@ pub fn select_targets_tui_with_checks(
     let mut selected = vec![true; upgradable_targets.len()];
 
     loop {
-        terminal.draw(|frame| {
+        draw_terminal(terminal, |frame| {
             let show_checks = !check_targets.is_empty() && !start_time.is_empty();
             if show_checks {
                 let area = frame.area();
@@ -230,13 +252,10 @@ pub fn select_targets_tui_with_checks(
                 list_state.select(Some(target_row_index(upgradable_targets, cursor, state)));
                 frame.render_stateful_widget(list, chunks[1], &mut list_state);
             }
-        })?;
+        })
+        .await?;
 
-        if !event::poll(Duration::from_millis(250))? {
-            continue;
-        }
-
-        let Event::Key(key) = event::read()? else {
+        let Some(key) = read_key_event(Duration::from_millis(250)).await? else {
             continue;
         };
         if key.kind != KeyEventKind::Press {
@@ -276,7 +295,7 @@ pub fn select_targets_tui_with_checks(
     }
 }
 
-pub fn wait_tui_message(
+pub async fn wait_tui_message(
     terminal: &mut AppTerminal,
     title: &str,
     lines: &[String],
@@ -293,7 +312,7 @@ pub fn wait_tui_message(
         .join("  ");
     let status = format!("[{title}] {body}");
     loop {
-        terminal.draw(|frame| {
+        draw_terminal(terminal, |frame| {
             let area = frame.area();
             let footer = Layout::default()
                 .direction(Direction::Vertical)
@@ -304,12 +323,10 @@ pub fn wait_tui_message(
                 Paragraph::new(status.as_str()).style(Style::default().fg(Color::Yellow)),
                 footer,
             );
-        })?;
+        })
+        .await?;
 
-        if !event::poll(Duration::from_millis(250))? {
-            continue;
-        }
-        let Event::Key(key) = event::read()? else {
+        let Some(key) = read_key_event(Duration::from_millis(250)).await? else {
             continue;
         };
         if key.kind != KeyEventKind::Press {
@@ -330,7 +347,7 @@ pub fn wait_tui_message(
     }
 }
 
-pub fn wait_tui_message_on_checks(
+pub async fn wait_tui_message_on_checks(
     terminal: &mut AppTerminal,
     state: &AppState,
     targets: &[String],
@@ -351,7 +368,7 @@ pub fn wait_tui_message_on_checks(
     let status = format!("[{title}] {body}");
 
     loop {
-        terminal.draw(|frame| {
+        draw_terminal(terminal, |frame| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -390,12 +407,10 @@ pub fn wait_tui_message_on_checks(
                 Paragraph::new(status.as_str()).style(Style::default().fg(Color::Yellow)),
                 chunks[2],
             );
-        })?;
+        })
+        .await?;
 
-        if !event::poll(Duration::from_millis(250))? {
-            continue;
-        }
-        let Event::Key(key) = event::read()? else {
+        let Some(key) = read_key_event(Duration::from_millis(250)).await? else {
             continue;
         };
         if key.kind != KeyEventKind::Press {
@@ -426,7 +441,7 @@ pub struct SelectionConfirmView<'a> {
     pub lines: &'a [String],
 }
 
-pub fn wait_tui_float_on_selection(
+pub async fn wait_tui_float_on_selection(
     terminal: &mut AppTerminal,
     view: &SelectionConfirmView<'_>,
 ) -> io::Result<bool> {
@@ -438,7 +453,7 @@ pub fn wait_tui_float_on_selection(
     let mut confirm_selected = true;
 
     loop {
-        terminal.draw(|frame| {
+        draw_terminal(terminal, |frame| {
             let area = frame.area();
             let targets_height =
                 ((view.check_targets.len() as u16) + 2).clamp(3, area.height.saturating_sub(7));
@@ -559,12 +574,10 @@ pub fn wait_tui_float_on_selection(
                 Paragraph::new(buttons).alignment(ratatui::layout::Alignment::Center),
                 inner_chunks[1],
             );
-        })?;
+        })
+        .await?;
 
-        if !event::poll(Duration::from_millis(250))? {
-            continue;
-        }
-        let Event::Key(key) = event::read()? else {
+        let Some(key) = read_key_event(Duration::from_millis(250)).await? else {
             continue;
         };
         if key.kind != KeyEventKind::Press {

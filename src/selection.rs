@@ -1,5 +1,6 @@
 use ratatui::{Terminal, backend::CrosstermBackend};
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::output::print_exit_signal_message;
 use crate::state::{AppState, target_label, updatable_items_for_target};
@@ -11,18 +12,21 @@ fn print_target_updatable_items(state: &AppState, target: &str) {
     }
 }
 
-pub fn select_targets_prompt(state: &AppState, upgradable_targets: &[String]) -> Vec<String> {
+pub async fn select_targets_prompt(state: &AppState, upgradable_targets: &[String]) -> Vec<String> {
     let mut selected_targets = Vec::<String>::new();
     println!("逐项确认待升级项目.");
+    let mut stdin = BufReader::new(tokio::io::stdin());
+    let mut stdout = tokio::io::stdout();
 
     for target in upgradable_targets {
         println!("{}", target_label(target));
         print_target_updatable_items(state, target);
-        let message = format!("是否升级 {}", target_label(target));
-        print!("{message} [Y/n]: ");
-        let _ = io::stdout().flush();
+        let message = format!("是否升级 {} [Y/n]: ", target_label(target));
+        if stdout.write_all(message.as_bytes()).await.is_err() || stdout.flush().await.is_err() {
+            return Vec::new();
+        }
         let mut answer = String::new();
-        match io::stdin().read_line(&mut answer) {
+        match stdin.read_line(&mut answer).await {
             Ok(0) => {
                 print_exit_signal_message();
                 return Vec::new();
@@ -45,14 +49,15 @@ pub fn select_targets_prompt(state: &AppState, upgradable_targets: &[String]) ->
     selected_targets
 }
 
-pub fn select_targets(state: &AppState, upgradable_targets: &[String]) -> Vec<String> {
+pub async fn select_targets(state: &AppState, upgradable_targets: &[String]) -> Vec<String> {
     if io::stdout().is_terminal() && io::stdin().is_terminal() {
-        let tui_result = (|| {
-            let _guard = TerminalGuard::enter()?;
+        let tui_result = async {
+            let _guard = TerminalGuard::enter().await?;
             let backend = CrosstermBackend::new(io::stdout());
             let mut terminal = Terminal::new(backend)?;
-            select_targets_tui(&mut terminal, state, upgradable_targets)
-        })();
+            select_targets_tui(&mut terminal, state, upgradable_targets).await
+        }
+        .await;
         match tui_result {
             Ok(chosen) => return chosen,
             Err(err) if err.kind() == io::ErrorKind::Interrupted => {
@@ -64,7 +69,7 @@ pub fn select_targets(state: &AppState, upgradable_targets: &[String]) -> Vec<St
             }
         }
     }
-    select_targets_prompt(state, upgradable_targets)
+    select_targets_prompt(state, upgradable_targets).await
 }
 
 pub fn resolve_cli_selection(requested: &[String], upgradable_targets: &[String]) -> Vec<String> {
@@ -101,11 +106,19 @@ pub fn resolve_cli_selection_quiet(
     (selected, skipped)
 }
 
-pub fn confirm_default_yes(prompt: &str) -> Option<bool> {
-    print!("{prompt} [Y/n]: ");
-    let _ = io::stdout().flush();
+pub async fn confirm_default_yes(prompt: &str) -> Option<bool> {
+    let mut stdout = tokio::io::stdout();
+    if stdout
+        .write_all(format!("{prompt} [Y/n]: ").as_bytes())
+        .await
+        .is_err()
+        || stdout.flush().await.is_err()
+    {
+        return None;
+    }
+    let mut stdin = BufReader::new(tokio::io::stdin());
     let mut answer = String::new();
-    match io::stdin().read_line(&mut answer) {
+    match stdin.read_line(&mut answer).await {
         Ok(0) => return None,
         Ok(_) => {}
         Err(err) if err.kind() == io::ErrorKind::Interrupted => return None,

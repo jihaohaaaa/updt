@@ -1,15 +1,17 @@
 use std::env;
 use std::io::{self, IsTerminal};
-use std::path::{Path, PathBuf};
+use tokio::fs;
 
 use crate::state::{AppState, SystemProfile};
 
-pub fn parse_profile(state: &mut AppState) {
+pub async fn parse_profile(state: &mut AppState) {
     let prefix = env::var("PREFIX").unwrap_or_default();
     state.enable.nvim = true;
     state.is_termux = prefix.contains("com.termux")
-        || Path::new("/data/data/com.termux/files/usr/bin/pkg").exists();
-    state.is_arch_linux = PathBuf::from("/etc/arch-release").is_file();
+        || fs::metadata("/data/data/com.termux/files/usr/bin/pkg")
+            .await
+            .is_ok();
+    state.is_arch_linux = fs::metadata("/etc/arch-release").await.is_ok();
     if state.is_termux {
         state.system_profile = SystemProfile::Termux;
         state.enable.pkg = true;
