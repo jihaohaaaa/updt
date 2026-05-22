@@ -242,10 +242,10 @@ pub async fn run_checks_tui(
             break;
         }
         let key = block_in_place(|| {
-            if crossterm::event::poll(Duration::from_millis(20))? {
-                if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
-                    return Ok::<_, io::Error>(Some(key));
-                }
+            if crossterm::event::poll(Duration::from_millis(20))?
+                && let crossterm::event::Event::Key(key) = crossterm::event::read()?
+            {
+                return Ok::<_, io::Error>(Some(key));
             }
             Ok(None)
         })?;
