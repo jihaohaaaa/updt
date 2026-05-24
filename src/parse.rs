@@ -73,6 +73,18 @@ pub struct ScoopStatusOutput {
     pub metadata_outdated: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScoopListItem {
+    pub name: String,
+    pub is_global: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScoopBlockedProcessInfo {
+    pub app_name: Option<String>,
+    pub details: Vec<String>,
+}
+
 #[derive(Clone, Copy)]
 struct ScoopStatusColumns {
     installed_start: usize,
@@ -106,6 +118,45 @@ impl ScoopStatusColumns {
     }
 }
 
+#[derive(Clone, Copy)]
+struct ScoopListColumns {
+    version_start: usize,
+    info_start: usize,
+}
+
+impl ScoopListColumns {
+    fn from_header(line: &str) -> Option<Self> {
+        let version_start = line.find("Version")?;
+        let source_start = line.find("Source")?;
+        let updated_start = line.find("Updated")?;
+        let info_start = line.find("Info")?;
+        if !line[..version_start].contains("Name")
+            || version_start >= source_start
+            || source_start >= updated_start
+            || updated_start >= info_start
+        {
+            return None;
+        }
+
+        Some(Self {
+            version_start,
+            info_start,
+        })
+    }
+
+    fn parse_item(self, line: &str) -> Option<ScoopListItem> {
+        let name = slice_column(line, 0, self.version_start).trim();
+        if name.is_empty() {
+            return None;
+        }
+        let info = slice_column(line, self.info_start, line.len()).trim();
+        Some(ScoopListItem {
+            name: name.to_string(),
+            is_global: info.contains("Global install"),
+        })
+    }
+}
+
 fn slice_column(line: &str, start: usize, end: usize) -> &str {
     let len = line.len();
     if start >= len || start >= end {
@@ -124,6 +175,10 @@ fn is_scoop_status_noise(line: &str) -> bool {
         line,
         "Everything is ok!" | "Scoop is up to date." | "Scoop was updated successfully!"
     )
+}
+
+fn is_scoop_list_noise(line: &str) -> bool {
+    line == "Installed apps:"
 }
 
 pub fn parse_scoop_status_output(output: &str) -> ScoopStatusOutput {
@@ -173,6 +228,97 @@ pub fn parse_scoop_status_output(output: &str) -> ScoopStatusOutput {
     parsed
 }
 
+pub fn parse_scoop_list_output(output: &str) -> Result<Vec<ScoopListItem>, ()> {
+    let cleaned = strip_ansi_control_sequences(output);
+    let mut items = Vec::new();
+    let mut columns = None;
+    let mut saw_content = false;
+
+    for raw in cleaned.lines() {
+        let line = raw.trim_end();
+        let trimmed = line.trim();
+        if trimmed.is_empty() || is_scoop_list_noise(trimmed) {
+            continue;
+        }
+        saw_content = true;
+
+        if let Some(header) = ScoopListColumns::from_header(line) {
+            columns = Some(header);
+            continue;
+        }
+        if is_scoop_status_separator(trimmed) {
+            continue;
+        }
+
+        let Some(columns) = columns else {
+            return Err(());
+        };
+        let Some(item) = columns.parse_item(line) else {
+            return Err(());
+        };
+        items.push(item);
+    }
+
+    if !saw_content {
+        return Ok(items);
+    }
+    if columns.is_none() {
+        return Err(());
+    }
+
+    Ok(items)
+}
+
+pub fn parse_scoop_blocked_process_output(output: &str) -> Option<ScoopBlockedProcessInfo> {
+    const HEADER_MARKER: &str = "The following instances of \"";
+    const HEADER_SUFFIX: &str = "\" are still running. Close them and try again.";
+    const SKIP_MARKER: &str = "Running process detected, skip updating.";
+
+    let cleaned = strip_ansi_control_sequences(output);
+    let lines = cleaned.lines().map(str::trim_end).collect::<Vec<_>>();
+    let mut header_index = None;
+    let mut skip_index = None;
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if header_index.is_none()
+            && trimmed.contains(HEADER_MARKER)
+            && trimmed.contains(HEADER_SUFFIX)
+        {
+            header_index = Some(idx);
+        }
+        if skip_index.is_none() && trimmed.contains(SKIP_MARKER) {
+            skip_index = Some(idx);
+        }
+    }
+
+    if header_index.is_none() && skip_index.is_none() {
+        return None;
+    }
+
+    let app_name = header_index.and_then(|idx| {
+        let line = lines[idx].trim();
+        let start = line.find(HEADER_MARKER)? + HEADER_MARKER.len();
+        let rest = line.get(start..)?;
+        let end = rest.find(HEADER_SUFFIX)?;
+        Some(rest[..end].to_string())
+    });
+
+    let details = if let Some(start) = header_index {
+        let end = skip_index.unwrap_or(lines.len());
+        lines[start..end]
+            .iter()
+            .map(|line| line.trim_end())
+            .filter(|line| !line.trim().is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>()
+    } else {
+        vec![SKIP_MARKER.to_string()]
+    };
+
+    Some(ScoopBlockedProcessInfo { app_name, details })
+}
+
 pub fn parse_fnm_version_token(line: &str) -> Option<String> {
     let trimmed = line.trim().trim_start_matches('*').trim();
     let token = trimmed.split_whitespace().next()?;
@@ -217,7 +363,10 @@ pub fn strip_ansi_control_sequences(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ScoopStatusOutput, parse_scoop_status_output};
+    use super::{
+        ScoopBlockedProcessInfo, ScoopListItem, ScoopStatusOutput,
+        parse_scoop_blocked_process_output, parse_scoop_list_output, parse_scoop_status_output,
+    };
 
     #[test]
     fn parses_scoop_status_table_outdated_items() {
@@ -264,5 +413,126 @@ dependency    1.0                              innounp\n";
                 metadata_outdated: false,
             }
         );
+    }
+
+    #[test]
+    fn parses_scoop_list_local_only_item() {
+        let output = "\
+Installed apps:\n\
+\n\
+Name                     Version    Source Updated             Info\n\
+----                     -------    ------ -------             ----\n\
+git                      2.54.0     main   2026-04-25 12:58:13\n";
+
+        assert_eq!(
+            parse_scoop_list_output(output),
+            Ok(vec![ScoopListItem {
+                name: "git".to_string(),
+                is_global: false,
+            }])
+        );
+    }
+
+    #[test]
+    fn parses_scoop_list_global_only_item() {
+        let output = "\
+Installed apps:\n\
+\n\
+Name                     Version    Source Updated             Info\n\
+----                     -------    ------ -------             ----\n\
+git                      2.54.0     main   2026-04-25 12:58:13 Global install\n";
+
+        assert_eq!(
+            parse_scoop_list_output(output),
+            Ok(vec![ScoopListItem {
+                name: "git".to_string(),
+                is_global: true,
+            }])
+        );
+    }
+
+    #[test]
+    fn parses_scoop_list_same_app_in_local_and_global_scope() {
+        let output = "\
+Installed apps:\n\
+\n\
+Name                     Version    Source Updated             Info\n\
+----                     -------    ------ -------             ----\n\
+git                      2.54.0     main   2026-04-25 12:58:13\n\
+git                      2.54.0     main   2026-04-25 12:58:14 Global install\n";
+
+        assert_eq!(
+            parse_scoop_list_output(output),
+            Ok(vec![
+                ScoopListItem {
+                    name: "git".to_string(),
+                    is_global: false,
+                },
+                ScoopListItem {
+                    name: "git".to_string(),
+                    is_global: true,
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn parses_scoop_list_without_global_marker() {
+        let output = "\
+Installed apps:\n\
+\n\
+Name                     Version    Source Updated             Info\n\
+----                     -------    ------ -------             ----\n\
+git                      2.54.0     main   2026-04-25 12:58:13 Deprecated package\n";
+
+        assert_eq!(
+            parse_scoop_list_output(output),
+            Ok(vec![ScoopListItem {
+                name: "git".to_string(),
+                is_global: false,
+            }])
+        );
+    }
+
+    #[test]
+    fn parses_scoop_blocked_process_output() {
+        let output = "\
+ERROR The following instances of \"git\" are still running. Close them and try again.\n\
+\n\
+Handles  NPM(K)    PM(K)      WS(K)     CPU(s)     Id  SI ProcessName\n\
+-------  ------    -----      -----     ------     --  -- -----------\n\
+    123      10    10000      20000       0.10   1234   1 git\n\
+\n\
+Running process detected, skip updating.\n";
+
+        assert_eq!(
+            parse_scoop_blocked_process_output(output),
+            Some(ScoopBlockedProcessInfo {
+                app_name: Some("git".to_string()),
+                details: vec![
+                    "ERROR The following instances of \"git\" are still running. Close them and try again.".to_string(),
+                    "Handles  NPM(K)    PM(K)      WS(K)     CPU(s)     Id  SI ProcessName".to_string(),
+                    "-------  ------    -----      -----     ------     --  -- -----------".to_string(),
+                    "123      10    10000      20000       0.10   1234   1 git".to_string(),
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn ignores_normal_scoop_update_output_for_blocked_process_detection() {
+        let output = "\
+Updating 'git' (2.54.0 -> 2.55.0)\n\
+Downloading new version\n\
+'git' (2.55.0) was installed successfully!\n";
+
+        assert_eq!(parse_scoop_blocked_process_output(output), None);
+    }
+
+    #[test]
+    fn ignores_unrelated_failures_for_blocked_process_detection() {
+        let output = "ERROR hash check failed\nInstallation aborted.\n";
+
+        assert_eq!(parse_scoop_blocked_process_output(output), None);
     }
 }

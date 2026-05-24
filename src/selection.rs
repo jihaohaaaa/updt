@@ -6,6 +6,13 @@ use crate::output::print_exit_signal_message;
 use crate::state::{AppState, target_label, updatable_items_for_target};
 use crate::ui::{TerminalGuard, select_targets_tui};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScoopBlockedAction {
+    KillAndRetry,
+    Skip,
+    Abort,
+}
+
 fn print_target_updatable_items(state: &AppState, target: &str) {
     for item in updatable_items_for_target(state, target) {
         println!("  - {item}");
@@ -128,4 +135,50 @@ pub async fn confirm_default_yes(prompt: &str) -> Option<bool> {
         answer.trim().to_ascii_lowercase().as_str(),
         "" | "y" | "yes"
     ))
+}
+
+pub async fn prompt_scoop_blocked_action(
+    app_label: &str,
+    details: &[String],
+) -> ScoopBlockedAction {
+    println!("[scoop] {app_label} 因运行中进程被阻塞.");
+    for line in details {
+        println!("{line}");
+    }
+    println!("可选操作: [k] Kill & Retry, [s] Skip, [a] Abort");
+
+    let mut stdin = BufReader::new(tokio::io::stdin());
+    let mut stdout = tokio::io::stdout();
+
+    loop {
+        if stdout
+            .write_all("选择操作 [k/s/a]: ".as_bytes())
+            .await
+            .is_err()
+            || stdout.flush().await.is_err()
+        {
+            return ScoopBlockedAction::Abort;
+        }
+
+        let mut answer = String::new();
+        match stdin.read_line(&mut answer).await {
+            Ok(0) => {
+                print_exit_signal_message();
+                return ScoopBlockedAction::Abort;
+            }
+            Ok(_) => match answer.trim().to_ascii_lowercase().as_str() {
+                "k" | "kill" | "retry" | "r" => return ScoopBlockedAction::KillAndRetry,
+                "s" | "skip" => return ScoopBlockedAction::Skip,
+                "a" | "abort" | "q" | "quit" => return ScoopBlockedAction::Abort,
+                _ => {
+                    println!("请输入 k、s 或 a.");
+                }
+            },
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {
+                print_exit_signal_message();
+                return ScoopBlockedAction::Abort;
+            }
+            Err(_) => return ScoopBlockedAction::Abort,
+        }
+    }
 }
