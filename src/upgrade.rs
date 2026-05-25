@@ -11,7 +11,7 @@ use crate::profile::{desktop_linux_session, interactive_terminal};
 use crate::selection::{ScoopBlockedAction, prompt_scoop_blocked_action};
 use crate::state::{AppState, target_label};
 use std::collections::{HashMap, HashSet};
-use std::{env, io, process};
+use std::{env, future::Future, io, pin::Pin, process};
 use tokio::fs;
 
 #[cfg(windows)]
@@ -23,251 +23,532 @@ pub async fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
     print_section("执行升级");
     let mut run_fail = false;
     let self_pkg = env!("CARGO_PKG_NAME");
-    let mut cargo_self_needs_update = false;
-    let pacman_selected = selected.iter().any(|s| s == "pacman");
-    let run_pacman_first = state.is_arch_linux && pacman_selected;
+    let pacman_plan = PacmanUpgradePlan::from_selected(state, selected);
 
-    if run_pacman_first {
-        run_fail |= !run_pacman_upgrade(state).await;
-    }
+    run_fail |= !run_pacman_before_standard_targets(state, pacman_plan).await;
+    let mut standard_outcome =
+        run_selected_standard_targets(PRE_PACMAN_STANDARD_TARGETS, state, selected, self_pkg).await;
+    run_fail |= standard_outcome.failed;
+    run_fail |= !run_pacman_after_standard_targets(state, pacman_plan).await;
+    let post_pacman_outcome =
+        run_selected_standard_targets(POST_PACMAN_STANDARD_TARGETS, state, selected, self_pkg)
+            .await;
+    standard_outcome.merge(post_pacman_outcome);
+    run_fail |= post_pacman_outcome.failed;
+    run_fail |=
+        !upgrade_cargo_self_if_needed(self_pkg, standard_outcome.cargo_self_needs_update).await;
 
-    if selected.iter().any(|s| s == "brew") {
-        println!("[brew] 正在刷新索引: brew update --quiet");
-        match run_inherit("brew", &["update", "--quiet"]).await {
-            Ok(true) => {
-                println!("[brew] 正在执行: brew upgrade --greedy");
-                match run_inherit("brew", &["upgrade", "--greedy"]).await {
-                    Ok(true) => println!("[brew] 升级完成."),
-                    _ => {
-                        println!("[brew] 升级失败.");
-                        run_fail = true;
-                    }
-                }
-            }
-            _ => {
-                println!("[brew] 升级失败: brew update 失败.");
-                run_fail = true;
-            }
+    print_upgrade_summary(selected, run_fail)
+}
+
+fn target_selected(selected: &[String], target: &str) -> bool {
+    selected.iter().any(|id| id == target)
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PacmanUpgradePlan {
+    selected: bool,
+    run_before_standard_targets: bool,
+}
+
+impl PacmanUpgradePlan {
+    fn from_selected(state: &AppState, selected: &[String]) -> Self {
+        let selected = target_selected(selected, "pacman");
+        Self {
+            selected,
+            run_before_standard_targets: state.is_arch_linux && selected,
         }
     }
 
-    if selected.iter().any(|s| s == "npm") {
-        println!("[npm] 正在执行: npm update -g");
-        match run_inherit("npm", &["update", "-g"]).await {
-            Ok(true) => println!("[npm] 全局包升级完成."),
-            _ => {
-                println!("[npm] 全局包升级失败.");
-                run_fail = true;
-            }
+    fn should_run(self, before_standard_targets: bool) -> bool {
+        self.selected && self.run_before_standard_targets == before_standard_targets
+    }
+}
+
+async fn run_pacman_before_standard_targets(state: &AppState, plan: PacmanUpgradePlan) -> bool {
+    run_pacman_at_position(state, plan, true).await
+}
+
+async fn run_pacman_after_standard_targets(state: &AppState, plan: PacmanUpgradePlan) -> bool {
+    run_pacman_at_position(state, plan, false).await
+}
+
+async fn run_pacman_at_position(
+    state: &AppState,
+    plan: PacmanUpgradePlan,
+    before_standard_targets: bool,
+) -> bool {
+    if plan.should_run(before_standard_targets) {
+        run_pacman_upgrade(state).await
+    } else {
+        true
+    }
+}
+
+#[derive(Clone, Copy)]
+struct StandardUpgradeTarget {
+    id: &'static str,
+    run: StandardUpgradeFn,
+}
+
+type StandardUpgradeFuture<'a> = Pin<Box<dyn Future<Output = StandardUpgradeOutcome> + 'a>>;
+type StandardUpgradeFn = for<'a> fn(&'a AppState, &'a str) -> StandardUpgradeFuture<'a>;
+
+const PRE_PACMAN_STANDARD_TARGETS: &[StandardUpgradeTarget] = &[
+    StandardUpgradeTarget {
+        id: "brew",
+        run: run_brew_target,
+    },
+    StandardUpgradeTarget {
+        id: "npm",
+        run: run_npm_target,
+    },
+    StandardUpgradeTarget {
+        id: "cargo",
+        run: run_cargo_target,
+    },
+    StandardUpgradeTarget {
+        id: "nvim",
+        run: run_nvim_target,
+    },
+    StandardUpgradeTarget {
+        id: "rustup",
+        run: run_rustup_target,
+    },
+    StandardUpgradeTarget {
+        id: "fnm",
+        run: run_fnm_target,
+    },
+    StandardUpgradeTarget {
+        id: "scoop",
+        run: run_scoop_target,
+    },
+    StandardUpgradeTarget {
+        id: "paru",
+        run: run_paru_target,
+    },
+    StandardUpgradeTarget {
+        id: "flatpak",
+        run: run_flatpak_target,
+    },
+];
+
+const POST_PACMAN_STANDARD_TARGETS: &[StandardUpgradeTarget] = &[StandardUpgradeTarget {
+    id: "pkg",
+    run: run_pkg_target,
+}];
+
+#[derive(Clone, Copy, Debug, Default)]
+struct StandardUpgradeOutcome {
+    failed: bool,
+    cargo_self_needs_update: bool,
+}
+
+impl StandardUpgradeOutcome {
+    fn from_success(success: bool) -> Self {
+        Self {
+            failed: !success,
+            cargo_self_needs_update: false,
         }
     }
 
-    if selected.iter().any(|s| s == "cargo") {
-        cargo_self_needs_update = state
-            .cargo
-            .updatable_packages
-            .iter()
-            .any(|pkg| pkg.as_str() == self_pkg);
-        let targets: Vec<String> = state
-            .cargo
-            .updatable_packages
-            .iter()
-            .filter(|pkg| pkg.as_str() != self_pkg)
-            .cloned()
-            .collect();
-
-        if targets.is_empty() {
-            if cargo_self_needs_update {
-                println!("[cargo] 检测到 updt 自身可升级, 将在最后单独升级.");
-            } else {
-                println!("[cargo] 无可升级 crate, 跳过.");
-            }
-        } else {
-            let mut args = Vec::with_capacity(targets.len());
-            for pkg in &targets {
-                args.push(pkg.as_str());
-            }
-            println!(
-                "[cargo] 正在执行: cargo install-update --locked {}",
-                targets.join(" ")
-            );
-            match run_cargo_install_update_inherit(&args).await {
-                Ok(true) => println!("[cargo] 其他已安装 crate 升级完成."),
-                _ => {
-                    println!("[cargo] 已安装 crate 升级失败.");
-                    run_fail = true;
-                }
-            }
-            if cargo_self_needs_update {
-                println!("[cargo] updt 自身将放到最后单独升级.");
-            }
+    fn from_cargo(outcome: CargoUpgradeOutcome) -> Self {
+        Self {
+            failed: outcome.failed,
+            cargo_self_needs_update: outcome.self_needs_update,
         }
     }
 
-    if selected.iter().any(|s| s == "nvim") {
-        if !state.nvim.installed {
-            println!("[nvim] 未安装 nvim, 跳过.");
-        } else {
-            if state.nvim.lazy_available {
-                println!("[nvim] 正在执行: nvim --headless \"+Lazy! sync\" +qa");
-                match run_nvim_headless_inherit(&["+Lazy! sync", "+qa"]).await {
-                    Ok(true) => println!("[nvim] Lazy 插件更新完成."),
-                    _ => {
-                        println!("[nvim] Lazy 插件更新失败.");
-                        run_fail = true;
-                    }
-                }
-            } else {
-                println!("[nvim] 未检测到 Lazy 插件管理器, 跳过插件更新.");
-            }
-
-            if state.nvim.mason_available {
-                println!(
-                    "[nvim] 正在执行: nvim --headless \"+Lazy load mason.nvim\" \"+MasonUpdate\" +qa"
-                );
-                match run_nvim_headless_inherit(&["+Lazy load mason.nvim", "+MasonUpdate", "+qa"])
-                    .await
-                {
-                    Ok(true) => println!("[nvim] Mason registry 更新完成."),
-                    _ => {
-                        println!("[nvim] Mason registry 更新失败.");
-                        run_fail = true;
-                    }
-                }
-
-                println!(
-                    "[nvim] 正在执行: nvim --headless \"+Lazy load mason.nvim\" \"+lua ... MasonInstall <installed>\" +qa"
-                );
-                match run_nvim_headless_inherit(&[
-                    "+Lazy load mason.nvim",
-                    "+lua local root=vim.fn.stdpath('data')..'/mason/packages'; local ok,dir=pcall(vim.fs.dir,root); if not ok or not dir then return end; local pkgs={}; for name,t in dir do if t=='directory' then table.insert(pkgs,name) end end; table.sort(pkgs); if #pkgs>0 then vim.cmd('MasonInstall '..table.concat(pkgs,' ')) end",
-                    "+qa",
-                ])
-                .await
-                {
-                    Ok(true) => println!("[nvim] Mason 已安装工具更新完成."),
-                    _ => {
-                        println!("[nvim] Mason 已安装工具更新失败.");
-                        run_fail = true;
-                    }
-                }
-            } else {
-                println!("[nvim] 未检测到 mason.nvim, 跳过 Mason 更新.");
-            }
-        }
+    fn merge(&mut self, outcome: Self) {
+        self.failed |= outcome.failed;
+        self.cargo_self_needs_update |= outcome.cargo_self_needs_update;
     }
+}
 
-    if selected.iter().any(|s| s == "rustup") {
-        println!("[rustup] 正在执行: rustup update");
-        match run_inherit("rustup", &["update"]).await {
-            Ok(true) => println!("[rustup] toolchain 升级完成."),
-            _ => {
-                println!("[rustup] toolchain 升级失败.");
-                run_fail = true;
-            }
-        }
+async fn run_selected_standard_targets(
+    targets: &'static [StandardUpgradeTarget],
+    state: &AppState,
+    selected: &[String],
+    self_pkg: &str,
+) -> StandardUpgradeOutcome {
+    let mut outcome = StandardUpgradeOutcome::default();
+    for target in selected_standard_targets(targets, selected) {
+        outcome.merge((target.run)(state, self_pkg).await);
     }
+    outcome
+}
 
-    if selected.iter().any(|s| s == "fnm") {
-        println!("[fnm] 正在执行: fnm install --latest");
-        match run_inherit("fnm", &["install", "--latest"]).await {
-            Ok(true) => println!("[fnm] latest Node.js 已安装/更新."),
-            _ => {
-                println!("[fnm] latest Node.js 更新失败.");
-                run_fail = true;
-            }
-        }
-        println!("[fnm] 正在执行: fnm install --lts");
-        match run_inherit("fnm", &["install", "--lts"]).await {
-            Ok(true) => println!("[fnm] LTS Node.js 已安装/更新."),
-            _ => {
-                println!("[fnm] LTS Node.js 更新失败.");
-                run_fail = true;
-            }
-        }
-    }
+fn selected_standard_targets<'a>(
+    targets: &'static [StandardUpgradeTarget],
+    selected: &'a [String],
+) -> impl Iterator<Item = &'static StandardUpgradeTarget> + 'a {
+    targets
+        .iter()
+        .filter(move |target| target_selected(selected, target.id))
+}
 
-    if selected.iter().any(|s| s == "scoop") && !upgrade_scoop_packages(state).await {
-        run_fail = true;
-    }
+fn run_brew_target<'a>(_state: &'a AppState, _self_pkg: &'a str) -> StandardUpgradeFuture<'a> {
+    Box::pin(async { StandardUpgradeOutcome::from_success(upgrade_brew().await) })
+}
 
-    if selected.iter().any(|s| s == "paru") {
-        println!("[paru] 正在执行: paru -Sua");
-        match run_inherit("paru", &["-Sua"]).await {
-            Ok(true) => println!("[paru] AUR 包升级完成."),
-            _ => {
-                println!("[paru] AUR 包升级失败.");
-                run_fail = true;
-            }
-        }
-    }
+fn run_npm_target<'a>(_state: &'a AppState, _self_pkg: &'a str) -> StandardUpgradeFuture<'a> {
+    Box::pin(async { StandardUpgradeOutcome::from_success(upgrade_npm().await) })
+}
 
-    if selected.iter().any(|s| s == "flatpak") {
-        println!("[flatpak] 正在执行: flatpak update");
-        match run_inherit("flatpak", &["update"]).await {
-            Ok(true) => println!("[flatpak] 应用升级完成."),
-            _ => {
-                println!("[flatpak] 应用升级失败.");
-                run_fail = true;
-            }
-        }
-    }
+fn run_cargo_target<'a>(state: &'a AppState, self_pkg: &'a str) -> StandardUpgradeFuture<'a> {
+    Box::pin(async move {
+        StandardUpgradeOutcome::from_cargo(upgrade_cargo_packages(state, self_pkg).await)
+    })
+}
 
-    if pacman_selected && !run_pacman_first {
-        run_fail |= !run_pacman_upgrade(state).await;
-    }
+fn run_nvim_target<'a>(state: &'a AppState, _self_pkg: &'a str) -> StandardUpgradeFuture<'a> {
+    Box::pin(async move { StandardUpgradeOutcome::from_success(upgrade_nvim(state).await) })
+}
 
-    if selected.iter().any(|s| s == "pkg") {
-        println!("[pkg] 正在执行: pkg update");
-        match run_inherit("pkg", &["update"]).await {
-            Ok(true) => {
-                println!("[pkg] 正在执行: pkg upgrade");
-                match run_inherit("pkg", &["upgrade"]).await {
-                    Ok(true) => println!("[pkg] 包升级完成."),
-                    _ => {
-                        println!("[pkg] 包升级失败.");
-                        run_fail = true;
-                    }
-                }
-            }
-            _ => {
-                println!("[pkg] 升级失败: pkg update 失败.");
-                run_fail = true;
-            }
-        }
-    }
+fn run_rustup_target<'a>(_state: &'a AppState, _self_pkg: &'a str) -> StandardUpgradeFuture<'a> {
+    Box::pin(async { StandardUpgradeOutcome::from_success(upgrade_rustup().await) })
+}
 
+fn run_fnm_target<'a>(_state: &'a AppState, _self_pkg: &'a str) -> StandardUpgradeFuture<'a> {
+    Box::pin(async { StandardUpgradeOutcome::from_success(upgrade_fnm().await) })
+}
+
+fn run_scoop_target<'a>(state: &'a AppState, _self_pkg: &'a str) -> StandardUpgradeFuture<'a> {
+    Box::pin(
+        async move { StandardUpgradeOutcome::from_success(upgrade_scoop_packages(state).await) },
+    )
+}
+
+fn run_paru_target<'a>(_state: &'a AppState, _self_pkg: &'a str) -> StandardUpgradeFuture<'a> {
+    Box::pin(async { StandardUpgradeOutcome::from_success(upgrade_paru().await) })
+}
+
+fn run_flatpak_target<'a>(_state: &'a AppState, _self_pkg: &'a str) -> StandardUpgradeFuture<'a> {
+    Box::pin(async { StandardUpgradeOutcome::from_success(upgrade_flatpak().await) })
+}
+
+fn run_pkg_target<'a>(_state: &'a AppState, _self_pkg: &'a str) -> StandardUpgradeFuture<'a> {
+    Box::pin(async { StandardUpgradeOutcome::from_success(upgrade_pkg().await) })
+}
+
+async fn upgrade_cargo_self_if_needed(self_pkg: &str, cargo_self_needs_update: bool) -> bool {
     if cargo_self_needs_update {
-        #[cfg(windows)]
-        {
-            println!(
-                "[cargo] 即将单独升级 updt: 先退出当前 updt, 再执行 cargo install-update --locked updt"
-            );
-            match schedule_windows_self_update(self_pkg).await {
-                Ok(()) => {
-                    println!("[cargo] 已启动前台自更新窗口, 本次 updt 退出后会显示升级过程.");
-                }
-                Err(err) => {
-                    println!("[cargo] 启动前台自更新窗口失败: {err}");
-                    println!("[cargo] 可手动执行: cargo install-update --locked updt");
-                    run_fail = true;
-                }
-            }
-        }
+        upgrade_cargo_self(self_pkg).await
+    } else {
+        true
+    }
+}
 
-        #[cfg(not(windows))]
-        {
-            println!("[cargo] 正在执行: cargo install-update --locked updt");
-            match run_cargo_install_update_inherit(&[self_pkg]).await {
-                Ok(true) => println!("[cargo] updt 自身升级完成."),
-                _ => {
-                    println!("[cargo] updt 自身升级失败.");
-                    run_fail = true;
-                }
-            }
+async fn upgrade_brew() -> bool {
+    println!("[brew] 正在刷新索引: brew update --quiet");
+    match run_inherit("brew", &["update", "--quiet"]).await {
+        Ok(true) => {}
+        _ => {
+            println!("[brew] 升级失败: brew update 失败.");
+            return false;
         }
     }
 
+    println!("[brew] 正在执行: brew upgrade --greedy");
+    match run_inherit("brew", &["upgrade", "--greedy"]).await {
+        Ok(true) => {
+            println!("[brew] 升级完成.");
+            true
+        }
+        _ => {
+            println!("[brew] 升级失败.");
+            false
+        }
+    }
+}
+
+async fn upgrade_npm() -> bool {
+    run_logged_inherit(
+        "npm",
+        "npm",
+        &["update", "-g"],
+        "npm update -g",
+        "[npm] 全局包升级完成.",
+        "[npm] 全局包升级失败.",
+    )
+    .await
+}
+
+struct CargoUpgradeOutcome {
+    failed: bool,
+    self_needs_update: bool,
+}
+
+async fn upgrade_cargo_packages(state: &AppState, self_pkg: &str) -> CargoUpgradeOutcome {
+    let self_needs_update = state
+        .cargo
+        .updatable_packages
+        .iter()
+        .any(|pkg| pkg.as_str() == self_pkg);
+    let targets = cargo_packages_excluding_self(state, self_pkg);
+
+    if targets.is_empty() {
+        if self_needs_update {
+            println!("[cargo] 检测到 updt 自身可升级, 将在最后单独升级.");
+        } else {
+            println!("[cargo] 无可升级 crate, 跳过.");
+        }
+        return CargoUpgradeOutcome {
+            failed: false,
+            self_needs_update,
+        };
+    }
+
+    let failed = !upgrade_cargo_package_targets(&targets).await;
+    if self_needs_update {
+        println!("[cargo] updt 自身将放到最后单独升级.");
+    }
+
+    CargoUpgradeOutcome {
+        failed,
+        self_needs_update,
+    }
+}
+
+fn cargo_packages_excluding_self(state: &AppState, self_pkg: &str) -> Vec<String> {
+    state
+        .cargo
+        .updatable_packages
+        .iter()
+        .filter(|pkg| pkg.as_str() != self_pkg)
+        .cloned()
+        .collect()
+}
+
+async fn upgrade_cargo_package_targets(targets: &[String]) -> bool {
+    let mut args = Vec::with_capacity(targets.len());
+    for pkg in targets {
+        args.push(pkg.as_str());
+    }
+    println!(
+        "[cargo] 正在执行: cargo install-update --locked {}",
+        targets.join(" ")
+    );
+    match run_cargo_install_update_inherit(&args).await {
+        Ok(true) => {
+            println!("[cargo] 其他已安装 crate 升级完成.");
+            true
+        }
+        _ => {
+            println!("[cargo] 已安装 crate 升级失败.");
+            false
+        }
+    }
+}
+
+async fn upgrade_nvim(state: &AppState) -> bool {
+    if !state.nvim.installed {
+        println!("[nvim] 未安装 nvim, 跳过.");
+        return true;
+    }
+
+    let lazy_ok = upgrade_nvim_lazy(state.nvim.lazy_available).await;
+    let mason_ok = upgrade_nvim_mason(state.nvim.mason_available).await;
+    lazy_ok && mason_ok
+}
+
+async fn upgrade_nvim_lazy(lazy_available: bool) -> bool {
+    if !lazy_available {
+        println!("[nvim] 未检测到 Lazy 插件管理器, 跳过插件更新.");
+        return true;
+    }
+
+    run_logged_nvim_headless(
+        "nvim --headless \"+Lazy! sync\" +qa",
+        &["+Lazy! sync", "+qa"],
+        "[nvim] Lazy 插件更新完成.",
+        "[nvim] Lazy 插件更新失败.",
+    )
+    .await
+}
+
+async fn upgrade_nvim_mason(mason_available: bool) -> bool {
+    if !mason_available {
+        println!("[nvim] 未检测到 mason.nvim, 跳过 Mason 更新.");
+        return true;
+    }
+
+    let registry_ok = run_logged_nvim_headless(
+        "nvim --headless \"+Lazy load mason.nvim\" \"+MasonUpdate\" +qa",
+        &["+Lazy load mason.nvim", "+MasonUpdate", "+qa"],
+        "[nvim] Mason registry 更新完成.",
+        "[nvim] Mason registry 更新失败.",
+    )
+    .await;
+    let packages_ok = run_logged_nvim_headless(
+        "nvim --headless \"+Lazy load mason.nvim\" \"+lua ... MasonInstall <installed>\" +qa",
+        &[
+            "+Lazy load mason.nvim",
+            "+lua local root=vim.fn.stdpath('data')..'/mason/packages'; local ok,dir=pcall(vim.fs.dir,root); if not ok or not dir then return end; local pkgs={}; for name,t in dir do if t=='directory' then table.insert(pkgs,name) end end; table.sort(pkgs); if #pkgs>0 then vim.cmd('MasonInstall '..table.concat(pkgs,' ')) end",
+            "+qa",
+        ],
+        "[nvim] Mason 已安装工具更新完成.",
+        "[nvim] Mason 已安装工具更新失败.",
+    )
+    .await;
+    registry_ok && packages_ok
+}
+
+async fn upgrade_rustup() -> bool {
+    run_logged_inherit(
+        "rustup",
+        "rustup",
+        &["update"],
+        "rustup update",
+        "[rustup] toolchain 升级完成.",
+        "[rustup] toolchain 升级失败.",
+    )
+    .await
+}
+
+async fn upgrade_fnm() -> bool {
+    let latest_ok = run_logged_inherit(
+        "fnm",
+        "fnm",
+        &["install", "--latest"],
+        "fnm install --latest",
+        "[fnm] latest Node.js 已安装/更新.",
+        "[fnm] latest Node.js 更新失败.",
+    )
+    .await;
+    let lts_ok = run_logged_inherit(
+        "fnm",
+        "fnm",
+        &["install", "--lts"],
+        "fnm install --lts",
+        "[fnm] LTS Node.js 已安装/更新.",
+        "[fnm] LTS Node.js 更新失败.",
+    )
+    .await;
+    latest_ok && lts_ok
+}
+
+async fn upgrade_paru() -> bool {
+    run_logged_inherit(
+        "paru",
+        "paru",
+        &["-Sua"],
+        "paru -Sua",
+        "[paru] AUR 包升级完成.",
+        "[paru] AUR 包升级失败.",
+    )
+    .await
+}
+
+async fn upgrade_flatpak() -> bool {
+    run_logged_inherit(
+        "flatpak",
+        "flatpak",
+        &["update"],
+        "flatpak update",
+        "[flatpak] 应用升级完成.",
+        "[flatpak] 应用升级失败.",
+    )
+    .await
+}
+
+async fn upgrade_pkg() -> bool {
+    println!("[pkg] 正在执行: pkg update");
+    match run_inherit("pkg", &["update"]).await {
+        Ok(true) => {}
+        _ => {
+            println!("[pkg] 升级失败: pkg update 失败.");
+            return false;
+        }
+    }
+
+    println!("[pkg] 正在执行: pkg upgrade");
+    match run_inherit("pkg", &["upgrade"]).await {
+        Ok(true) => {
+            println!("[pkg] 包升级完成.");
+            true
+        }
+        _ => {
+            println!("[pkg] 包升级失败.");
+            false
+        }
+    }
+}
+
+#[cfg(windows)]
+async fn upgrade_cargo_self(self_pkg: &str) -> bool {
+    println!(
+        "[cargo] 即将单独升级 updt: 先退出当前 updt, 再执行 cargo install-update --locked updt"
+    );
+    match schedule_windows_self_update(self_pkg).await {
+        Ok(()) => {
+            println!("[cargo] 已启动前台自更新窗口, 本次 updt 退出后会显示升级过程.");
+            true
+        }
+        Err(err) => {
+            println!("[cargo] 启动前台自更新窗口失败: {err}");
+            println!("[cargo] 可手动执行: cargo install-update --locked updt");
+            false
+        }
+    }
+}
+
+#[cfg(not(windows))]
+async fn upgrade_cargo_self(self_pkg: &str) -> bool {
+    println!("[cargo] 正在执行: cargo install-update --locked updt");
+    match run_cargo_install_update_inherit(&[self_pkg]).await {
+        Ok(true) => {
+            println!("[cargo] updt 自身升级完成.");
+            true
+        }
+        _ => {
+            println!("[cargo] updt 自身升级失败.");
+            false
+        }
+    }
+}
+
+async fn run_logged_inherit(
+    prefix: &str,
+    program: &str,
+    args: &[&str],
+    command_label: &str,
+    success_message: &str,
+    failure_message: &str,
+) -> bool {
+    println!("[{prefix}] 正在执行: {command_label}");
+    match run_inherit(program, args).await {
+        Ok(true) => {
+            println!("{success_message}");
+            true
+        }
+        _ => {
+            println!("{failure_message}");
+            false
+        }
+    }
+}
+
+async fn run_logged_nvim_headless(
+    command_label: &str,
+    args: &[&str],
+    success_message: &str,
+    failure_message: &str,
+) -> bool {
+    println!("[nvim] 正在执行: {command_label}");
+    match run_nvim_headless_inherit(args).await {
+        Ok(true) => {
+            println!("{success_message}");
+            true
+        }
+        _ => {
+            println!("{failure_message}");
+            false
+        }
+    }
+}
+
+fn print_upgrade_summary(selected: &[String], run_fail: bool) -> bool {
     print_section("汇总");
     println!(
         "已选择升级项: {}",
