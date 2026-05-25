@@ -32,105 +32,176 @@ use crate::upgrade::upgrade_selected;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
-    let cli = parse_cli();
+    process::exit(run_app().await);
+}
 
-    if matches!(cli, CliCommand::Fish) {
-        match install_fish_completion().await {
-            Ok(path) => {
-                println!("fish completion 已写入: {}", path.display());
-                process::exit(0);
-            }
-            Err(err) => {
-                eprintln!("[fish] 写入失败: {err}");
-                process::exit(1);
-            }
-        }
+struct RunContext {
+    state: AppState,
+    requested_updates: Vec<String>,
+    start_time: String,
+    force_text_flow: bool,
+}
+
+async fn run_app() -> i32 {
+    let cli = parse_cli();
+    if let Some(code) = handle_fish_command(&cli).await {
+        return code;
     }
 
-    let mut state = AppState::default();
-    parse_profile(&mut state).await;
-    let start_time = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let mut ctx = RunContext::new(requested_updates(&cli)).await;
+    if let Some(code) = try_interactive_start(&mut ctx).await {
+        return code;
+    }
 
-    let requested_updates = match &cli {
+    print_text_header_if_needed(&ctx);
+    run_checks_for_context(&mut ctx).await;
+    offer_install_cargo_update(&mut ctx.state).await;
+    finish_after_checks(&mut ctx).await
+}
+
+impl RunContext {
+    async fn new(requested_updates: Vec<String>) -> Self {
+        let mut state = AppState::default();
+        parse_profile(&mut state).await;
+        let start_time = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        Self {
+            state,
+            requested_updates,
+            start_time,
+            force_text_flow: false,
+        }
+    }
+}
+
+async fn handle_fish_command(cli: &CliCommand) -> Option<i32> {
+    if !matches!(cli, CliCommand::Fish) {
+        return None;
+    }
+    Some(match install_fish_completion().await {
+        Ok(path) => {
+            println!("fish completion 已写入: {}", path.display());
+            0
+        }
+        Err(err) => {
+            eprintln!("[fish] 写入失败: {err}");
+            1
+        }
+    })
+}
+
+fn requested_updates(cli: &CliCommand) -> Vec<String> {
+    match cli {
         CliCommand::Update(v) => v.clone(),
         _ => Vec::new(),
-    };
+    }
+}
 
-    let mut force_text_flow = false;
+async fn try_interactive_start(ctx: &mut RunContext) -> Option<i32> {
     if interactive_terminal() {
-        match run_interactive_flow(&mut state, &requested_updates, &start_time).await {
-            Ok(InteractiveResult::Exit(code)) => process::exit(code),
-            Ok(InteractiveResult::RunUpgrade(selected_targets)) => {
-                if upgrade_selected(&state, &selected_targets).await {
-                    process::exit(0);
-                }
-                process::exit(1);
+        return handle_interactive_result(
+            run_interactive_flow(&mut ctx.state, &ctx.requested_updates, &ctx.start_time).await,
+            ctx,
+        )
+        .await;
+    }
+    None
+}
+
+async fn handle_interactive_result(
+    result: io::Result<InteractiveResult>,
+    ctx: &mut RunContext,
+) -> Option<i32> {
+    match result {
+        Ok(InteractiveResult::Exit(code)) => Some(code),
+        Ok(InteractiveResult::RunUpgrade(selected_targets)) => {
+            Some(upgrade_exit_code(&ctx.state, &selected_targets).await)
+        }
+        Err(err) => {
+            if err.kind() == io::ErrorKind::Interrupted {
+                print_exit_signal_message();
+                return Some(0);
             }
-            Err(err) => {
-                if err.kind() == io::ErrorKind::Interrupted {
-                    print_exit_signal_message();
-                    process::exit(0);
-                }
-                eprintln!("[ui] TUI 运行失败, 自动回退文本流程: {err}");
-                force_text_flow = true;
-            }
+            eprintln!("[ui] TUI 运行失败, 自动回退文本流程: {err}");
+            ctx.force_text_flow = true;
+            None
         }
     }
+}
 
-    if !interactive_terminal() || force_text_flow {
+async fn upgrade_exit_code(state: &AppState, selected_targets: &[String]) -> i32 {
+    if upgrade_selected(state, selected_targets).await {
+        0
+    } else {
+        1
+    }
+}
+
+fn print_text_header_if_needed(ctx: &RunContext) {
+    if !interactive_terminal() || ctx.force_text_flow {
         print_section("检查可升级项");
         println!(
             "{}: {}",
             color_bold("开始时间", TermColor::Blue),
-            start_time
+            ctx.start_time
         );
         println!(
             "{}: {}",
             color_bold("系统策略", TermColor::Blue),
-            profile_name(state.system_profile)
+            profile_name(ctx.state.system_profile)
         );
     }
+}
 
-    if force_text_flow {
-        let targets = resolve_check_targets(&state, &requested_updates);
-        run_checks_plain(&mut state, &targets).await;
+async fn run_checks_for_context(ctx: &mut RunContext) {
+    if ctx.force_text_flow {
+        let targets = resolve_check_targets(&ctx.state, &ctx.requested_updates);
+        run_checks_plain(&mut ctx.state, &targets).await;
     } else {
-        run_checks(&mut state, &requested_updates, &start_time).await;
+        run_checks(&mut ctx.state, &ctx.requested_updates, &ctx.start_time).await;
     }
-    offer_install_cargo_update(&mut state).await;
+}
 
-    let upgradable_targets = build_upgradable_targets(&state);
+async fn finish_after_checks(ctx: &mut RunContext) -> i32 {
+    let upgradable_targets = build_upgradable_targets(&ctx.state);
 
     if upgradable_targets.is_empty() {
-        print_section("汇总");
-        println!("{}", ok_text("没有可升级项."));
-        if any_check_failed(&state) {
-            println!("{}", warn_text("但有检查失败, 请根据上方日志排查."));
-            process::exit(1);
-        }
-        process::exit(0);
+        return no_upgrades_exit_code(&ctx.state);
     }
 
     if !interactive_terminal() {
         print_section("选择要升级的项目");
     }
-    let selected_targets = if requested_updates.is_empty() {
-        if force_text_flow {
-            select_targets_prompt(&state, &upgradable_targets).await
-        } else {
-            select_targets(&state, &upgradable_targets).await
-        }
-    } else {
-        resolve_cli_selection(&requested_updates, &upgradable_targets)
-    };
+    let selected_targets = select_after_checks(ctx, &upgradable_targets).await;
+    selected_upgrade_exit_code(&ctx.state, &selected_targets).await
+}
 
+fn no_upgrades_exit_code(state: &AppState) -> i32 {
+    print_section("汇总");
+    println!("{}", ok_text("没有可升级项."));
+    if any_check_failed(state) {
+        println!("{}", warn_text("但有检查失败, 请根据上方日志排查."));
+        1
+    } else {
+        0
+    }
+}
+
+async fn select_after_checks(ctx: &RunContext, upgradable_targets: &[String]) -> Vec<String> {
+    if !ctx.requested_updates.is_empty() {
+        return resolve_cli_selection(&ctx.requested_updates, upgradable_targets);
+    }
+    if ctx.force_text_flow {
+        select_targets_prompt(&ctx.state, upgradable_targets).await
+    } else {
+        select_targets(&ctx.state, upgradable_targets).await
+    }
+}
+
+async fn selected_upgrade_exit_code(state: &AppState, selected_targets: &[String]) -> i32 {
     if selected_targets.is_empty() {
         println!("{}", warn_text("未选择任何升级项, 已退出."));
-        process::exit(0);
+        return 0;
     }
 
-    if upgrade_selected(&state, &selected_targets).await {
-        process::exit(0);
-    }
-    process::exit(1);
+    upgrade_exit_code(state, selected_targets).await
 }

@@ -661,74 +661,121 @@ fn build_scoop_update_tasks(
 }
 
 async fn upgrade_scoop_packages(state: &AppState) -> bool {
+    if !refresh_scoop_metadata().await {
+        return false;
+    }
+
+    let Some(tasks) = scoop_update_tasks_for_state(state).await else {
+        return false;
+    };
+
+    let outcome = run_scoop_update_batch(tasks, interactive_terminal()).await;
+    outcome.print_summary();
+    outcome.success()
+}
+
+async fn refresh_scoop_metadata() -> bool {
     let metadata_args = vec!["update".to_string()];
     println!("[scoop] 正在执行: {}", scoop_command_label(&metadata_args));
     match run_scoop_inherit(&metadata_args).await {
-        Ok(true) => {}
+        Ok(true) => true,
         Ok(false) => {
             println!(
                 "[scoop] 升级失败: {} 失败.",
                 scoop_command_label(&metadata_args)
             );
-            return false;
+            false
         }
         Err(err) => {
             println!("[scoop] 升级失败: {err}");
-            return false;
+            false
         }
     }
+}
 
+async fn scoop_update_tasks_for_state(state: &AppState) -> Option<Vec<ScoopUpdateTask>> {
     let installed_items = match load_scoop_installed_items().await {
         Ok(items) => items,
         Err(err) => {
             println!("[scoop] 无法解析已安装包列表: {err}");
-            return false;
+            return None;
         }
     };
     let tasks = build_scoop_update_tasks(&state.scoop.updatable_items, &installed_items);
     if tasks.is_empty() {
         println!("[scoop] 未解析到待升级包任务.");
-        return false;
+        None
+    } else {
+        Some(tasks)
+    }
+}
+
+#[derive(Default)]
+struct ScoopBatchOutcome {
+    updated: Vec<String>,
+    skipped_in_use: Vec<String>,
+    failed_other: Vec<String>,
+    aborted: bool,
+}
+
+impl ScoopBatchOutcome {
+    fn record(&mut self, task: &ScoopUpdateTask, outcome: ScoopTaskOutcome) {
+        match outcome {
+            ScoopTaskOutcome::Updated => self.updated.push(task.display_name()),
+            ScoopTaskOutcome::SkippedInUse => self.skipped_in_use.push(task.display_name()),
+            ScoopTaskOutcome::FailedOther => self.failed_other.push(task.display_name()),
+            ScoopTaskOutcome::Aborted => self.aborted = true,
+        }
     }
 
-    let allow_prompt = interactive_terminal();
-    let mut updated = Vec::new();
-    let mut skipped_in_use = Vec::new();
-    let mut failed_other = Vec::new();
-    let mut aborted = false;
+    fn print_summary(&self) {
+        print_nonempty_scoop_list(
+            !self.updated.is_empty(),
+            &format!("[scoop] 已更新 {} 个包.", self.updated.len()),
+            &[],
+        );
+        print_nonempty_scoop_list(
+            !self.skipped_in_use.is_empty(),
+            "[scoop] 以下包因运行中进程未完成更新:",
+            &self.skipped_in_use,
+        );
+        print_nonempty_scoop_list(
+            !self.failed_other.is_empty(),
+            "[scoop] 以下包更新失败:",
+            &self.failed_other,
+        );
+        if self.aborted {
+            println!("[scoop] 用户中止了后续 Scoop 包更新.");
+        }
+    }
 
+    fn success(&self) -> bool {
+        !self.aborted && self.skipped_in_use.is_empty() && self.failed_other.is_empty()
+    }
+}
+
+async fn run_scoop_update_batch(
+    tasks: Vec<ScoopUpdateTask>,
+    allow_prompt: bool,
+) -> ScoopBatchOutcome {
+    let mut batch = ScoopBatchOutcome::default();
     for task in tasks {
-        match run_scoop_update_task(&task, allow_prompt).await {
-            ScoopTaskOutcome::Updated => updated.push(task.display_name()),
-            ScoopTaskOutcome::SkippedInUse => skipped_in_use.push(task.display_name()),
-            ScoopTaskOutcome::FailedOther => failed_other.push(task.display_name()),
-            ScoopTaskOutcome::Aborted => {
-                aborted = true;
-                break;
-            }
+        let outcome = run_scoop_update_task(&task, allow_prompt).await;
+        batch.record(&task, outcome);
+        if batch.aborted {
+            break;
         }
     }
+    batch
+}
 
-    if !updated.is_empty() {
-        println!("[scoop] 已更新 {} 个包.", updated.len());
-    }
-    if !skipped_in_use.is_empty() {
-        println!("[scoop] 以下包因运行中进程未完成更新:");
-        for item in &skipped_in_use {
+fn print_nonempty_scoop_list(should_print: bool, header: &str, items: &[String]) {
+    if should_print {
+        println!("{header}");
+        for item in items {
             println!("  - {item}");
         }
     }
-    if !failed_other.is_empty() {
-        println!("[scoop] 以下包更新失败:");
-        for item in &failed_other {
-            println!("  - {item}");
-        }
-    }
-    if aborted {
-        println!("[scoop] 用户中止了后续 Scoop 包更新.");
-    }
-
-    !aborted && skipped_in_use.is_empty() && failed_other.is_empty()
 }
 
 async fn load_scoop_installed_items() -> io::Result<Vec<ScoopListItem>> {
@@ -741,45 +788,75 @@ async fn load_scoop_installed_items() -> io::Result<Vec<ScoopListItem>> {
 
 async fn run_scoop_update_task(task: &ScoopUpdateTask, allow_prompt: bool) -> ScoopTaskOutcome {
     loop {
-        let args = task.update_args();
-        println!("[scoop] 正在执行: {}", scoop_command_label(&args));
-
-        let (status, output) = match run_scoop_capture(&args).await {
-            Ok(result) => result,
-            Err(err) => {
-                println!("[scoop] {} 更新失败: {err}", task.display_name());
-                return ScoopTaskOutcome::FailedOther;
-            }
+        let Some((status, output)) = run_scoop_update_attempt(task).await else {
+            return ScoopTaskOutcome::FailedOther;
         };
 
         print_captured_command_output(&output);
 
         if let Some(blocked) = parse_scoop_blocked_process_output(&output) {
-            if !allow_prompt {
-                println!("[scoop] {} 因运行中进程被跳过.", task.display_name());
-                return ScoopTaskOutcome::SkippedInUse;
-            }
-
-            notify_scoop_blocked(task, &blocked).await;
-            match prompt_scoop_blocked_action(&task.display_name(), &blocked.details).await {
-                ScoopBlockedAction::KillAndRetry => {
-                    if let Err(err) = kill_scoop_task_processes(task, &blocked).await {
-                        println!("[scoop] 结束 {} 关联进程失败: {err}", task.display_name());
-                    }
-                    println!("[scoop] 正在重试 {}...", task.display_name());
-                    continue;
-                }
-                ScoopBlockedAction::Skip => return ScoopTaskOutcome::SkippedInUse,
-                ScoopBlockedAction::Abort => return ScoopTaskOutcome::Aborted,
+            match handle_scoop_blocked_update(task, &blocked, allow_prompt).await {
+                ScoopBlockedUpdate::Retry => continue,
+                ScoopBlockedUpdate::Done(outcome) => return outcome,
             }
         }
 
-        if status == 0 {
-            return ScoopTaskOutcome::Updated;
-        }
+        return scoop_status_outcome(task, status);
+    }
+}
 
+async fn run_scoop_update_attempt(task: &ScoopUpdateTask) -> Option<(i32, String)> {
+    let args = task.update_args();
+    println!("[scoop] 正在执行: {}", scoop_command_label(&args));
+    match run_scoop_capture(&args).await {
+        Ok(result) => Some(result),
+        Err(err) => {
+            println!("[scoop] {} 更新失败: {err}", task.display_name());
+            None
+        }
+    }
+}
+
+enum ScoopBlockedUpdate {
+    Retry,
+    Done(ScoopTaskOutcome),
+}
+
+async fn handle_scoop_blocked_update(
+    task: &ScoopUpdateTask,
+    blocked: &ScoopBlockedProcessInfo,
+    allow_prompt: bool,
+) -> ScoopBlockedUpdate {
+    if !allow_prompt {
+        println!("[scoop] {} 因运行中进程被跳过.", task.display_name());
+        return ScoopBlockedUpdate::Done(ScoopTaskOutcome::SkippedInUse);
+    }
+
+    notify_scoop_blocked(task, blocked).await;
+    match prompt_scoop_blocked_action(&task.display_name(), &blocked.details).await {
+        ScoopBlockedAction::KillAndRetry => retry_scoop_blocked_update(task, blocked).await,
+        ScoopBlockedAction::Skip => ScoopBlockedUpdate::Done(ScoopTaskOutcome::SkippedInUse),
+        ScoopBlockedAction::Abort => ScoopBlockedUpdate::Done(ScoopTaskOutcome::Aborted),
+    }
+}
+
+async fn retry_scoop_blocked_update(
+    task: &ScoopUpdateTask,
+    blocked: &ScoopBlockedProcessInfo,
+) -> ScoopBlockedUpdate {
+    if let Err(err) = kill_scoop_task_processes(task, blocked).await {
+        println!("[scoop] 结束 {} 关联进程失败: {err}", task.display_name());
+    }
+    println!("[scoop] 正在重试 {}...", task.display_name());
+    ScoopBlockedUpdate::Retry
+}
+
+fn scoop_status_outcome(task: &ScoopUpdateTask, status: i32) -> ScoopTaskOutcome {
+    if status == 0 {
+        ScoopTaskOutcome::Updated
+    } else {
         println!("[scoop] {} 更新失败 (exit {status}).", task.display_name());
-        return ScoopTaskOutcome::FailedOther;
+        ScoopTaskOutcome::FailedOther
     }
 }
 
@@ -909,33 +986,9 @@ async fn kill_scoop_task_processes(
 
 #[cfg(windows)]
 async fn resolve_scoop_app_dir(task: &ScoopUpdateTask) -> io::Result<String> {
-    let (status, scoop_dir_output) = run_capture("scoop", &["prefix", "scoop"]).await?;
-    if status != 0 {
-        return Err(io::Error::other(format!(
-            "scoop prefix scoop 失败 (exit {status})"
-        )));
-    }
-    let scoop_core_dir = first_nonempty_output_line(&scoop_dir_output)
-        .ok_or_else(|| io::Error::other("未找到 Scoop core 目录"))?;
-    let scoop_core_literal = ps_single_quote(&scoop_core_dir);
-    let app_literal = ps_single_quote(&task.app);
-    let shell = if command_exists("pwsh").await {
-        "pwsh"
-    } else {
-        "powershell.exe"
-    };
-    let script = format!(
-        "$ErrorActionPreference='Stop'; \
-. '{scoop_core_literal}\\lib\\core.ps1'; \
-. '{scoop_core_literal}\\lib\\versions.ps1'; \
-$path = currentdir '{app_literal}' ${}; \
-if (Test-Path $path) {{ Convert-Path $path }} else {{ exit 2 }}",
-        if matches!(task.scope, ScoopInstallScope::Global) {
-            "true"
-        } else {
-            "false"
-        }
-    );
+    let scoop_core_dir = scoop_core_dir().await?;
+    let shell = scoop_resolver_shell().await;
+    let script = scoop_app_dir_script(task, &scoop_core_dir);
     let args = [
         "-NoLogo",
         "-NoProfile",
@@ -953,6 +1006,56 @@ if (Test-Path $path) {{ Convert-Path $path }} else {{ exit 2 }}",
 
     first_nonempty_output_line(&output)
         .ok_or_else(|| io::Error::other(format!("无法解析 {} 安装目录", task.display_name())))
+}
+
+#[cfg(windows)]
+async fn scoop_core_dir() -> io::Result<String> {
+    let (status, output) = run_capture("scoop", &["prefix", "scoop"]).await?;
+    ensure_scoop_prefix_success(status)?;
+    first_nonempty_output_line(&output).ok_or_else(|| io::Error::other("未找到 Scoop core 目录"))
+}
+
+#[cfg(windows)]
+fn ensure_scoop_prefix_success(status: i32) -> io::Result<()> {
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "scoop prefix scoop 失败 (exit {status})"
+        )))
+    }
+}
+
+#[cfg(windows)]
+async fn scoop_resolver_shell() -> &'static str {
+    if command_exists("pwsh").await {
+        "pwsh"
+    } else {
+        "powershell.exe"
+    }
+}
+
+#[cfg(windows)]
+fn scoop_app_dir_script(task: &ScoopUpdateTask, scoop_core_dir: &str) -> String {
+    let scoop_core_literal = ps_single_quote(scoop_core_dir);
+    let app_literal = ps_single_quote(&task.app);
+    let global = scoop_scope_bool_literal(task.scope);
+    format!(
+        "$ErrorActionPreference='Stop'; \
+. '{scoop_core_literal}\\lib\\core.ps1'; \
+. '{scoop_core_literal}\\lib\\versions.ps1'; \
+$path = currentdir '{app_literal}' ${global}; \
+if (Test-Path $path) {{ Convert-Path $path }} else {{ exit 2 }}"
+    )
+}
+
+#[cfg(windows)]
+fn scoop_scope_bool_literal(scope: ScoopInstallScope) -> &'static str {
+    if matches!(scope, ScoopInstallScope::Global) {
+        "true"
+    } else {
+        "false"
+    }
 }
 
 #[cfg(not(windows))]
@@ -1039,9 +1142,7 @@ async fn spawn_windows_message_box(title: &str, body: &str) -> io::Result<()> {
 async fn run_pacman_upgrade(state: &AppState) -> bool {
     let (privilege_command, reason) = pacman_privilege_command(state).await;
 
-    if privilege_command == "pkexec" && !command_exists(privilege_command).await {
-        println!("[pacman] 未安装 pkexec, 无法使用 GUI 提权.");
-        println!("[pacman] 包升级失败.");
+    if !pacman_privilege_command_available(privilege_command).await {
         return false;
     }
 
@@ -1049,15 +1150,25 @@ async fn run_pacman_upgrade(state: &AppState) -> bool {
         println!("[pacman] {reason}");
     }
     println!("[pacman] 正在执行: {privilege_command} pacman -Syu");
-    match run_inherit(privilege_command, &["pacman", "-Syu"]).await {
-        Ok(true) => {
-            println!("[pacman] 包升级完成.");
-            true
-        }
-        _ => {
-            println!("[pacman] 包升级失败.");
-            false
-        }
+    print_pacman_upgrade_result(run_inherit(privilege_command, &["pacman", "-Syu"]).await)
+}
+
+async fn pacman_privilege_command_available(privilege_command: &str) -> bool {
+    if privilege_command != "pkexec" || command_exists(privilege_command).await {
+        return true;
+    }
+    println!("[pacman] 未安装 pkexec, 无法使用 GUI 提权.");
+    println!("[pacman] 包升级失败.");
+    false
+}
+
+fn print_pacman_upgrade_result(result: io::Result<bool>) -> bool {
+    if let Ok(true) = result {
+        println!("[pacman] 包升级完成.");
+        true
+    } else {
+        println!("[pacman] 包升级失败.");
+        false
     }
 }
 
@@ -1066,7 +1177,11 @@ async fn pacman_privilege_command(state: &AppState) -> (&'static str, Option<&'s
         return ("sudo", None);
     }
 
-    match terminal_focus_state().await {
+    pacman_privilege_for_focus(terminal_focus_state().await)
+}
+
+fn pacman_privilege_for_focus(state: TerminalFocusState) -> (&'static str, Option<&'static str>) {
+    match state {
         TerminalFocusState::Focused => ("sudo", None),
         TerminalFocusState::NotFocused => {
             ("pkexec", Some("terminal 未处于桌面焦点, 使用 GUI 提权."))
@@ -1090,37 +1205,64 @@ async fn terminal_focus_state() -> TerminalFocusState {
         return TerminalFocusState::NotFocused;
     }
 
-    if let Some(focused) = terminal_focused_by_x11_window_id().await {
-        return if focused {
-            TerminalFocusState::Focused
-        } else {
-            TerminalFocusState::NotFocused
-        };
-    }
+    terminal_focus_state_from_probes().await
+}
 
-    if let Some(pid) = active_window_pid().await {
-        return if current_process_belongs_to_window(pid).await {
-            TerminalFocusState::Focused
-        } else {
-            TerminalFocusState::NotFocused
-        };
+async fn terminal_focus_state_from_probes() -> TerminalFocusState {
+    if let Some(state) = terminal_focus_state_from_x11_window_id().await {
+        return state;
     }
+    terminal_focus_state_from_active_pid()
+        .await
+        .unwrap_or(TerminalFocusState::Unknown)
+}
 
-    TerminalFocusState::Unknown
+async fn terminal_focus_state_from_x11_window_id() -> Option<TerminalFocusState> {
+    terminal_focused_by_x11_window_id()
+        .await
+        .map(focus_state_from_bool)
+}
+
+async fn terminal_focus_state_from_active_pid() -> Option<TerminalFocusState> {
+    let pid = active_window_pid().await?;
+    Some(focus_state_from_bool(
+        current_process_belongs_to_window(pid).await,
+    ))
+}
+
+fn focus_state_from_bool(focused: bool) -> TerminalFocusState {
+    if focused {
+        TerminalFocusState::Focused
+    } else {
+        TerminalFocusState::NotFocused
+    }
 }
 
 async fn terminal_focused_by_x11_window_id() -> Option<bool> {
-    let terminal_window_id = env::var("WINDOWID").ok()?.trim().parse::<u64>().ok()?;
-    if terminal_window_id == 0 || !command_exists("xdotool").await {
+    let terminal_window_id = terminal_window_id_from_env()?;
+    if !x11_window_id_probe_available(terminal_window_id).await {
         return None;
     }
 
-    let (status, output) = run_capture("xdotool", &["getactivewindow"]).await.ok()?;
-    if status != 0 {
-        return None;
-    }
-    let active_window_id = output.trim().parse::<u64>().ok()?;
+    let active_window_id = active_x11_window_id().await?;
     Some(active_window_id == terminal_window_id)
+}
+
+fn terminal_window_id_from_env() -> Option<u64> {
+    env::var("WINDOWID").ok()?.trim().parse::<u64>().ok()
+}
+
+async fn x11_window_id_probe_available(terminal_window_id: u64) -> bool {
+    terminal_window_id != 0 && command_exists("xdotool").await
+}
+
+async fn active_x11_window_id() -> Option<u64> {
+    let (status, output) = run_capture("xdotool", &["getactivewindow"]).await.ok()?;
+    if status == 0 {
+        output.trim().parse::<u64>().ok()
+    } else {
+        None
+    }
 }
 
 async fn active_window_pid() -> Option<u32> {
@@ -1132,16 +1274,26 @@ async fn active_window_pid() -> Option<u32> {
 }
 
 async fn active_window_pid_from_hyprland() -> Option<u32> {
-    if env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() || !command_exists("hyprctl").await {
+    if !hyprland_pid_probe_available().await {
         return None;
     }
 
+    let output = hyprland_active_window_output().await?;
+    pid_from_hyprland_window_json(&output)
+}
+
+async fn hyprland_pid_probe_available() -> bool {
+    env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() && command_exists("hyprctl").await
+}
+
+async fn hyprland_active_window_output() -> Option<String> {
     let (status, output) = run_capture("hyprctl", &["activewindow", "-j"]).await.ok()?;
-    if status != 0 {
-        return None;
-    }
-    let value = serde_json::from_str::<serde_json::Value>(&output).ok()?;
-    value
+    (status == 0).then_some(output)
+}
+
+fn pid_from_hyprland_window_json(output: &str) -> Option<u32> {
+    serde_json::from_str::<serde_json::Value>(output)
+        .ok()?
         .get("pid")?
         .as_u64()
         .and_then(|pid| pid.try_into().ok())
@@ -1177,6 +1329,10 @@ async fn current_process_belongs_to_window(window_pid: u32) -> bool {
 
 async fn parent_pid(pid: u32) -> Option<u32> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).await.ok()?;
+    parent_pid_from_proc_stat(&stat)
+}
+
+fn parent_pid_from_proc_stat(stat: &str) -> Option<u32> {
     let after_comm = stat.rsplit_once(") ")?.1;
     let mut fields = after_comm.split_whitespace();
     fields.next()?;

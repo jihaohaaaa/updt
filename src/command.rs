@@ -13,14 +13,26 @@ pub async fn command_exists(name: &str) -> bool {
 }
 
 pub async fn resolve_command_path(name: &str) -> Option<PathBuf> {
-    if name.contains('/') || name.contains('\\') {
-        let path = Path::new(name);
-        return is_executable(path).await.then(|| path.to_path_buf());
+    if command_name_is_path(name) {
+        return executable_path(name).await;
     }
 
     let candidates = command_name_candidates(name);
+    find_command_in_path(&candidates).await
+}
+
+fn command_name_is_path(name: &str) -> bool {
+    name.contains('/') || name.contains('\\')
+}
+
+async fn executable_path(name: &str) -> Option<PathBuf> {
+    let path = Path::new(name);
+    is_executable(path).await.then(|| path.to_path_buf())
+}
+
+async fn find_command_in_path(candidates: &[String]) -> Option<PathBuf> {
     for dir in env::split_paths(&env::var_os("PATH")?) {
-        for candidate_name in &candidates {
+        for candidate_name in candidates {
             let candidate = dir.join(candidate_name);
             if is_executable(&candidate).await {
                 return Some(candidate);

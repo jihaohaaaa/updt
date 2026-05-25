@@ -28,55 +28,97 @@ pub async fn select_targets_prompt(state: &AppState, upgradable_targets: &[Strin
     for target in upgradable_targets {
         println!("{}", target_label(target));
         print_target_updatable_items(state, target);
-        let message = format!("是否升级 {} [Y/n]: ", target_label(target));
-        if stdout.write_all(message.as_bytes()).await.is_err() || stdout.flush().await.is_err() {
-            return Vec::new();
-        }
-        let mut answer = String::new();
-        match stdin.read_line(&mut answer).await {
-            Ok(0) => {
-                print_exit_signal_message();
-                return Vec::new();
-            }
-            Ok(_) => {
-                if matches!(
-                    answer.trim().to_ascii_lowercase().as_str(),
-                    "" | "y" | "yes"
-                ) {
-                    selected_targets.push(target.clone());
-                }
-            }
-            Err(err) if err.kind() == io::ErrorKind::Interrupted => {
-                print_exit_signal_message();
-                return Vec::new();
-            }
-            Err(_) => return Vec::new(),
+        match prompt_target_upgrade(&mut stdin, &mut stdout, target).await {
+            PromptAnswer::Yes => selected_targets.push(target.clone()),
+            PromptAnswer::No => {}
+            PromptAnswer::Abort => return Vec::new(),
         }
     }
     selected_targets
 }
 
+enum PromptAnswer {
+    Yes,
+    No,
+    Abort,
+}
+
+async fn prompt_target_upgrade(
+    stdin: &mut BufReader<tokio::io::Stdin>,
+    stdout: &mut tokio::io::Stdout,
+    target: &str,
+) -> PromptAnswer {
+    let message = format!("是否升级 {} [Y/n]: ", target_label(target));
+    if write_prompt(stdout, &message).await.is_err() {
+        return PromptAnswer::Abort;
+    }
+    prompt_answer_from_read(read_prompt_line(stdin).await)
+}
+
+fn prompt_answer_from_read(result: io::Result<Option<String>>) -> PromptAnswer {
+    match result {
+        Ok(Some(answer)) => prompt_answer_from_text(&answer),
+        Ok(None) => abort_prompt_after_exit_signal(),
+        Err(err) => prompt_answer_from_error(err),
+    }
+}
+
+fn prompt_answer_from_text(answer: &str) -> PromptAnswer {
+    if default_yes_answer(answer) {
+        PromptAnswer::Yes
+    } else {
+        PromptAnswer::No
+    }
+}
+
+fn abort_prompt_after_exit_signal() -> PromptAnswer {
+    print_exit_signal_message();
+    PromptAnswer::Abort
+}
+
+fn prompt_answer_from_error(err: io::Error) -> PromptAnswer {
+    if err.kind() == io::ErrorKind::Interrupted {
+        print_exit_signal_message();
+    }
+    PromptAnswer::Abort
+}
+
 pub async fn select_targets(state: &AppState, upgradable_targets: &[String]) -> Vec<String> {
-    if io::stdout().is_terminal() && io::stdin().is_terminal() {
-        let tui_result = async {
-            let _guard = TerminalGuard::enter().await?;
-            let backend = CrosstermBackend::new(io::stdout());
-            let mut terminal = Terminal::new(backend)?;
-            select_targets_tui(&mut terminal, state, upgradable_targets).await
-        }
-        .await;
-        match tui_result {
-            Ok(chosen) => return chosen,
-            Err(err) if err.kind() == io::ErrorKind::Interrupted => {
-                print_exit_signal_message();
-                return Vec::new();
-            }
-            Err(err) => {
-                eprintln!("[ui] TUI 初始化失败, 自动回退文本交互: {err}");
-            }
+    if terminal_selection_available() {
+        let result = select_targets_with_tui(state, upgradable_targets).await;
+        if let Some(chosen) = handle_tui_selection_result(result) {
+            return chosen;
         }
     }
     select_targets_prompt(state, upgradable_targets).await
+}
+
+fn terminal_selection_available() -> bool {
+    io::stdout().is_terminal() && io::stdin().is_terminal()
+}
+
+async fn select_targets_with_tui(
+    state: &AppState,
+    upgradable_targets: &[String],
+) -> io::Result<Vec<String>> {
+    let _guard = TerminalGuard::enter().await?;
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend)?;
+    select_targets_tui(&mut terminal, state, upgradable_targets).await
+}
+
+fn handle_tui_selection_result(result: io::Result<Vec<String>>) -> Option<Vec<String>> {
+    match result {
+        Ok(chosen) => Some(chosen),
+        Err(err) if err.kind() == io::ErrorKind::Interrupted => {
+            print_exit_signal_message();
+            Some(Vec::new())
+        }
+        Err(err) => {
+            eprintln!("[ui] TUI 初始化失败, 自动回退文本交互: {err}");
+            None
+        }
+    }
 }
 
 pub fn resolve_cli_selection(requested: &[String], upgradable_targets: &[String]) -> Vec<String> {
@@ -115,26 +157,41 @@ pub fn resolve_cli_selection_quiet(
 
 pub async fn confirm_default_yes(prompt: &str) -> Option<bool> {
     let mut stdout = tokio::io::stdout();
-    if stdout
-        .write_all(format!("{prompt} [Y/n]: ").as_bytes())
+    if write_prompt(&mut stdout, &format!("{prompt} [Y/n]: "))
         .await
         .is_err()
-        || stdout.flush().await.is_err()
     {
         return None;
     }
     let mut stdin = BufReader::new(tokio::io::stdin());
+    default_yes_from_read(read_prompt_line(&mut stdin).await)
+}
+
+fn default_yes_from_read(result: io::Result<Option<String>>) -> Option<bool> {
+    result
+        .ok()
+        .flatten()
+        .map(|answer| default_yes_answer(&answer))
+}
+
+async fn write_prompt(stdout: &mut tokio::io::Stdout, message: &str) -> io::Result<()> {
+    stdout.write_all(message.as_bytes()).await?;
+    stdout.flush().await
+}
+
+async fn read_prompt_line(stdin: &mut BufReader<tokio::io::Stdin>) -> io::Result<Option<String>> {
     let mut answer = String::new();
-    match stdin.read_line(&mut answer).await {
-        Ok(0) => return None,
-        Ok(_) => {}
-        Err(err) if err.kind() == io::ErrorKind::Interrupted => return None,
-        Err(_) => return None,
+    match stdin.read_line(&mut answer).await? {
+        0 => Ok(None),
+        _ => Ok(Some(answer)),
     }
-    Some(matches!(
+}
+
+fn default_yes_answer(answer: &str) -> bool {
+    matches!(
         answer.trim().to_ascii_lowercase().as_str(),
         "" | "y" | "yes"
-    ))
+    )
 }
 
 pub async fn prompt_scoop_blocked_action(
@@ -151,34 +208,45 @@ pub async fn prompt_scoop_blocked_action(
     let mut stdout = tokio::io::stdout();
 
     loop {
-        if stdout
-            .write_all("选择操作 [k/s/a]: ".as_bytes())
-            .await
-            .is_err()
-            || stdout.flush().await.is_err()
-        {
-            return ScoopBlockedAction::Abort;
+        match read_scoop_blocked_action(&mut stdin, &mut stdout).await {
+            Some(action) => return action,
+            None => println!("请输入 k、s 或 a."),
         }
+    }
+}
 
-        let mut answer = String::new();
-        match stdin.read_line(&mut answer).await {
-            Ok(0) => {
-                print_exit_signal_message();
-                return ScoopBlockedAction::Abort;
-            }
-            Ok(_) => match answer.trim().to_ascii_lowercase().as_str() {
-                "k" | "kill" | "retry" | "r" => return ScoopBlockedAction::KillAndRetry,
-                "s" | "skip" => return ScoopBlockedAction::Skip,
-                "a" | "abort" | "q" | "quit" => return ScoopBlockedAction::Abort,
-                _ => {
-                    println!("请输入 k、s 或 a.");
-                }
-            },
-            Err(err) if err.kind() == io::ErrorKind::Interrupted => {
-                print_exit_signal_message();
-                return ScoopBlockedAction::Abort;
-            }
-            Err(_) => return ScoopBlockedAction::Abort,
+async fn read_scoop_blocked_action(
+    stdin: &mut BufReader<tokio::io::Stdin>,
+    stdout: &mut tokio::io::Stdout,
+) -> Option<ScoopBlockedAction> {
+    if write_prompt(stdout, "选择操作 [k/s/a]: ").await.is_err() {
+        return Some(ScoopBlockedAction::Abort);
+    }
+    scoop_blocked_action_from_read(read_prompt_line(stdin).await)
+}
+
+fn scoop_blocked_action_from_read(
+    result: io::Result<Option<String>>,
+) -> Option<ScoopBlockedAction> {
+    match result {
+        Ok(Some(answer)) => parse_scoop_blocked_action(&answer),
+        Ok(None) => {
+            print_exit_signal_message();
+            Some(ScoopBlockedAction::Abort)
         }
+        Err(err) if err.kind() == io::ErrorKind::Interrupted => {
+            print_exit_signal_message();
+            Some(ScoopBlockedAction::Abort)
+        }
+        Err(_) => Some(ScoopBlockedAction::Abort),
+    }
+}
+
+fn parse_scoop_blocked_action(answer: &str) -> Option<ScoopBlockedAction> {
+    match answer.trim().to_ascii_lowercase().as_str() {
+        "k" | "kill" | "retry" | "r" => Some(ScoopBlockedAction::KillAndRetry),
+        "s" | "skip" => Some(ScoopBlockedAction::Skip),
+        "a" | "abort" | "q" | "quit" => Some(ScoopBlockedAction::Abort),
+        _ => None,
     }
 }

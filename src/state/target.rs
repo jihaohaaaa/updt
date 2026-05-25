@@ -9,6 +9,8 @@ struct TargetMeta {
     label: &'static str,
     section: &'static str,
     update_summary: &'static str,
+    flags: fn(&AppState) -> TargetStateFlags,
+    items: fn(&AppState) -> Vec<String>,
 }
 
 const TARGET_META: [TargetMeta; 11] = [
@@ -17,66 +19,88 @@ const TARGET_META: [TargetMeta; 11] = [
         label: "Homebrew",
         section: "Homebrew",
         update_summary: "发现可升级项",
+        flags: brew_flags,
+        items: brew_items,
     },
     TargetMeta {
         id: "npm",
         label: "npm",
         section: "npm (global)",
         update_summary: "发现可升级项",
+        flags: npm_flags,
+        items: npm_items,
     },
     TargetMeta {
         id: "cargo",
         label: "cargo",
         section: "cargo",
         update_summary: "发现可升级项",
+        flags: cargo_flags,
+        items: cargo_items,
     },
     TargetMeta {
         id: "nvim",
         label: "Neovim",
         section: "Neovim (Lazy/Mason)",
         update_summary: "可执行更新",
+        flags: nvim_flags,
+        items: nvim_items,
     },
     TargetMeta {
         id: "rustup",
         label: "rustup",
         section: "rustup",
         update_summary: "发现可升级项",
+        flags: rustup_flags,
+        items: rustup_items,
     },
     TargetMeta {
         id: "fnm",
         label: "fnm",
         section: "fnm (Node.js runtime)",
         update_summary: "发现可升级项",
+        flags: fnm_flags,
+        items: fnm_items,
     },
     TargetMeta {
         id: "scoop",
         label: "scoop",
         section: "scoop",
         update_summary: "发现可升级项",
+        flags: scoop_flags,
+        items: scoop_items,
     },
     TargetMeta {
         id: "paru",
         label: "paru",
         section: "paru (AUR)",
         update_summary: "发现可升级项",
+        flags: paru_flags,
+        items: paru_items,
     },
     TargetMeta {
         id: "flatpak",
         label: "flatpak",
         section: "flatpak",
         update_summary: "发现可升级项",
+        flags: flatpak_flags,
+        items: flatpak_items,
     },
     TargetMeta {
         id: "pacman",
         label: "pacman",
         section: "pacman",
         update_summary: "发现可升级项",
+        flags: pacman_flags,
+        items: pacman_items,
     },
     TargetMeta {
         id: "pkg",
         label: "pkg",
         section: "pkg (Termux)",
         update_summary: "发现可升级项",
+        flags: pkg_flags,
+        items: pkg_items,
     },
 ];
 
@@ -99,86 +123,7 @@ pub fn target_update_summary(target: &str) -> &'static str {
 }
 
 pub fn target_state_flags(state: &AppState, target: &str) -> Option<TargetStateFlags> {
-    match target {
-        "brew" => Some(TargetStateFlags {
-            enabled: state.enable.brew,
-            installed: state.brew.installed,
-            check_failed: state.brew.check_failed,
-            has_updates: state.brew.has_updates,
-            needs_cargo_updater: false,
-        }),
-        "npm" => Some(TargetStateFlags {
-            enabled: state.enable.npm,
-            installed: state.npm.installed,
-            check_failed: state.npm.check_failed,
-            has_updates: state.npm.has_updates,
-            needs_cargo_updater: false,
-        }),
-        "cargo" => Some(TargetStateFlags {
-            enabled: state.enable.cargo,
-            installed: state.cargo.installed,
-            check_failed: state.cargo.check_failed,
-            has_updates: state.cargo.has_updates,
-            needs_cargo_updater: !state.cargo.updater_installed,
-        }),
-        "nvim" => Some(TargetStateFlags {
-            enabled: state.enable.nvim,
-            installed: state.nvim.installed,
-            check_failed: state.nvim.check_failed,
-            has_updates: state.nvim.has_updates,
-            needs_cargo_updater: false,
-        }),
-        "rustup" => Some(TargetStateFlags {
-            enabled: state.enable.rustup,
-            installed: state.rustup.installed,
-            check_failed: state.rustup.check_failed,
-            has_updates: state.rustup.has_updates,
-            needs_cargo_updater: false,
-        }),
-        "fnm" => Some(TargetStateFlags {
-            enabled: state.enable.fnm,
-            installed: state.fnm.installed,
-            check_failed: state.fnm.check_failed,
-            has_updates: state.fnm.has_updates,
-            needs_cargo_updater: false,
-        }),
-        "scoop" => Some(TargetStateFlags {
-            enabled: state.enable.scoop,
-            installed: state.scoop.installed,
-            check_failed: state.scoop.check_failed,
-            has_updates: state.scoop.has_updates,
-            needs_cargo_updater: false,
-        }),
-        "paru" => Some(TargetStateFlags {
-            enabled: state.enable.paru,
-            installed: state.paru.installed,
-            check_failed: state.paru.check_failed,
-            has_updates: state.paru.has_updates,
-            needs_cargo_updater: false,
-        }),
-        "flatpak" => Some(TargetStateFlags {
-            enabled: state.enable.flatpak,
-            installed: state.flatpak.installed,
-            check_failed: state.flatpak.check_failed,
-            has_updates: state.flatpak.has_updates,
-            needs_cargo_updater: false,
-        }),
-        "pacman" => Some(TargetStateFlags {
-            enabled: state.enable.pacman,
-            installed: state.pacman.installed,
-            check_failed: state.pacman.check_failed,
-            has_updates: state.pacman.has_updates,
-            needs_cargo_updater: false,
-        }),
-        "pkg" => Some(TargetStateFlags {
-            enabled: state.enable.pkg,
-            installed: state.pkg.installed,
-            check_failed: state.pkg.check_failed,
-            has_updates: state.pkg.has_updates,
-            needs_cargo_updater: false,
-        }),
-        _ => None,
-    }
+    target_meta(target).map(|meta| (meta.flags)(state))
 }
 
 pub fn target_enabled(state: &AppState, target: &str) -> bool {
@@ -188,24 +133,172 @@ pub fn target_enabled(state: &AppState, target: &str) -> bool {
 }
 
 pub fn updatable_items_for_target(state: &AppState, target: &str) -> Vec<String> {
-    match target {
-        "brew" => state
-            .brew
-            .formula_list
-            .iter()
-            .chain(state.brew.cask_list.iter())
-            .cloned()
-            .collect(),
-        "npm" => state.npm.updatable_items.clone(),
-        "cargo" => state.cargo.updatable_packages.clone(),
-        "nvim" => state.nvim.updatable_components.clone(),
-        "rustup" => state.rustup.updatable_items.clone(),
-        "fnm" => state.fnm.updatable_items.clone(),
-        "scoop" => state.scoop.updatable_items.clone(),
-        "paru" => state.paru.updatable_items.clone(),
-        "flatpak" => state.flatpak.updatable_items.clone(),
-        "pacman" => state.pacman.updatable_items.clone(),
-        "pkg" => state.pkg.updatable_items.clone(),
-        _ => Vec::new(),
+    target_meta(target)
+        .map(|meta| (meta.items)(state))
+        .unwrap_or_default()
+}
+
+fn bucket_flags(
+    enabled: bool,
+    installed: bool,
+    check_failed: bool,
+    has_updates: bool,
+) -> TargetStateFlags {
+    TargetStateFlags {
+        enabled,
+        installed,
+        check_failed,
+        has_updates,
+        needs_cargo_updater: false,
     }
+}
+
+fn brew_flags(state: &AppState) -> TargetStateFlags {
+    bucket_flags(
+        state.enable.brew,
+        state.brew.installed,
+        state.brew.check_failed,
+        state.brew.has_updates,
+    )
+}
+
+fn npm_flags(state: &AppState) -> TargetStateFlags {
+    bucket_flags(
+        state.enable.npm,
+        state.npm.installed,
+        state.npm.check_failed,
+        state.npm.has_updates,
+    )
+}
+
+fn cargo_flags(state: &AppState) -> TargetStateFlags {
+    TargetStateFlags {
+        enabled: state.enable.cargo,
+        installed: state.cargo.installed,
+        check_failed: state.cargo.check_failed,
+        has_updates: state.cargo.has_updates,
+        needs_cargo_updater: !state.cargo.updater_installed,
+    }
+}
+
+fn nvim_flags(state: &AppState) -> TargetStateFlags {
+    bucket_flags(
+        state.enable.nvim,
+        state.nvim.installed,
+        state.nvim.check_failed,
+        state.nvim.has_updates,
+    )
+}
+
+fn rustup_flags(state: &AppState) -> TargetStateFlags {
+    bucket_flags(
+        state.enable.rustup,
+        state.rustup.installed,
+        state.rustup.check_failed,
+        state.rustup.has_updates,
+    )
+}
+
+fn fnm_flags(state: &AppState) -> TargetStateFlags {
+    bucket_flags(
+        state.enable.fnm,
+        state.fnm.installed,
+        state.fnm.check_failed,
+        state.fnm.has_updates,
+    )
+}
+
+fn scoop_flags(state: &AppState) -> TargetStateFlags {
+    bucket_flags(
+        state.enable.scoop,
+        state.scoop.installed,
+        state.scoop.check_failed,
+        state.scoop.has_updates,
+    )
+}
+
+fn paru_flags(state: &AppState) -> TargetStateFlags {
+    bucket_flags(
+        state.enable.paru,
+        state.paru.installed,
+        state.paru.check_failed,
+        state.paru.has_updates,
+    )
+}
+
+fn flatpak_flags(state: &AppState) -> TargetStateFlags {
+    bucket_flags(
+        state.enable.flatpak,
+        state.flatpak.installed,
+        state.flatpak.check_failed,
+        state.flatpak.has_updates,
+    )
+}
+
+fn pacman_flags(state: &AppState) -> TargetStateFlags {
+    bucket_flags(
+        state.enable.pacman,
+        state.pacman.installed,
+        state.pacman.check_failed,
+        state.pacman.has_updates,
+    )
+}
+
+fn pkg_flags(state: &AppState) -> TargetStateFlags {
+    bucket_flags(
+        state.enable.pkg,
+        state.pkg.installed,
+        state.pkg.check_failed,
+        state.pkg.has_updates,
+    )
+}
+
+fn brew_items(state: &AppState) -> Vec<String> {
+    state
+        .brew
+        .formula_list
+        .iter()
+        .chain(state.brew.cask_list.iter())
+        .cloned()
+        .collect()
+}
+
+fn npm_items(state: &AppState) -> Vec<String> {
+    state.npm.updatable_items.clone()
+}
+
+fn cargo_items(state: &AppState) -> Vec<String> {
+    state.cargo.updatable_packages.clone()
+}
+
+fn nvim_items(state: &AppState) -> Vec<String> {
+    state.nvim.updatable_components.clone()
+}
+
+fn rustup_items(state: &AppState) -> Vec<String> {
+    state.rustup.updatable_items.clone()
+}
+
+fn fnm_items(state: &AppState) -> Vec<String> {
+    state.fnm.updatable_items.clone()
+}
+
+fn scoop_items(state: &AppState) -> Vec<String> {
+    state.scoop.updatable_items.clone()
+}
+
+fn paru_items(state: &AppState) -> Vec<String> {
+    state.paru.updatable_items.clone()
+}
+
+fn flatpak_items(state: &AppState) -> Vec<String> {
+    state.flatpak.updatable_items.clone()
+}
+
+fn pacman_items(state: &AppState) -> Vec<String> {
+    state.pacman.updatable_items.clone()
+}
+
+fn pkg_items(state: &AppState) -> Vec<String> {
+    state.pkg.updatable_items.clone()
 }

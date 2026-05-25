@@ -1,37 +1,57 @@
 pub fn first_json_payload(output: &str) -> Option<&str> {
     let start = output.find('{')?;
     let bytes = output.as_bytes();
-    let mut depth: i32 = 0;
-    let mut in_string = false;
-    let mut escaped = false;
+    let mut scanner = JsonPayloadScanner::default();
 
     for (idx, b) in bytes.iter().enumerate().skip(start) {
-        if in_string {
-            if escaped {
-                escaped = false;
-                continue;
-            }
-            match *b {
-                b'\\' => escaped = true,
-                b'"' => in_string = false,
-                _ => {}
-            }
-            continue;
-        }
-
-        match *b {
-            b'"' => in_string = true,
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return output.get(start..=idx);
-                }
-            }
-            _ => {}
+        if scanner.consume(*b) {
+            return output.get(start..=idx);
         }
     }
     None
+}
+
+#[derive(Default)]
+struct JsonPayloadScanner {
+    depth: i32,
+    in_string: bool,
+    escaped: bool,
+}
+
+impl JsonPayloadScanner {
+    fn consume(&mut self, byte: u8) -> bool {
+        if self.in_string {
+            self.consume_string_byte(byte);
+            false
+        } else {
+            self.consume_json_byte(byte)
+        }
+    }
+
+    fn consume_string_byte(&mut self, byte: u8) {
+        if self.escaped {
+            self.escaped = false;
+            return;
+        }
+        match byte {
+            b'\\' => self.escaped = true,
+            b'"' => self.in_string = false,
+            _ => {}
+        }
+    }
+
+    fn consume_json_byte(&mut self, byte: u8) -> bool {
+        match byte {
+            b'"' => self.in_string = true,
+            b'{' => self.depth += 1,
+            b'}' => {
+                self.depth -= 1;
+                return self.depth == 0;
+            }
+            _ => {}
+        }
+        false
+    }
 }
 
 pub fn first_token(line: &str) -> Option<String> {
@@ -41,30 +61,46 @@ pub fn first_token(line: &str) -> Option<String> {
 pub fn parse_cargo_list(output: &str) -> Result<Vec<String>, ()> {
     let mut pkgs = Vec::new();
     for raw in output.lines() {
-        let line = raw.trim();
-        if line.is_empty() {
-            continue;
+        if let Some(pkg) = parse_cargo_list_line(raw)? {
+            pkgs.push(pkg);
         }
-        if line.starts_with("Polling registry ") {
-            continue;
-        }
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.as_slice() == ["Package", "Installed", "Latest", "Needs", "update"] {
-            continue;
-        }
-        if parts.len() == 4 && parts[1].starts_with('v') && parts[2].starts_with('v') {
-            match parts[3] {
-                "Yes" => {
-                    pkgs.push(parts[0].to_string());
-                    continue;
-                }
-                "No" => continue,
-                _ => {}
-            }
-        }
-        return Err(());
     }
     Ok(pkgs)
+}
+
+fn parse_cargo_list_line(raw: &str) -> Result<Option<String>, ()> {
+    let line = raw.trim();
+    if cargo_list_line_ignored(line) {
+        return Ok(None);
+    }
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    parse_cargo_package_row(&parts)
+}
+
+fn cargo_list_line_ignored(line: &str) -> bool {
+    line.is_empty()
+        || line.starts_with("Polling registry ")
+        || line.split_whitespace().collect::<Vec<_>>().as_slice()
+            == ["Package", "Installed", "Latest", "Needs", "update"]
+}
+
+fn parse_cargo_package_row(parts: &[&str]) -> Result<Option<String>, ()> {
+    if !cargo_package_row_shape(parts) {
+        return Err(());
+    }
+    cargo_package_update(parts[0], parts[3])
+}
+
+fn cargo_package_row_shape(parts: &[&str]) -> bool {
+    parts.len() == 4 && parts[1].starts_with('v') && parts[2].starts_with('v')
+}
+
+fn cargo_package_update(name: &str, needs_update: &str) -> Result<Option<String>, ()> {
+    match needs_update {
+        "Yes" => Ok(Some(name.to_string())),
+        "No" => Ok(None),
+        _ => Err(()),
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]

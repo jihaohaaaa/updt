@@ -95,11 +95,16 @@ pub struct AppState {
 }
 
 pub fn profile_name(profile: SystemProfile) -> &'static str {
-    match profile {
-        SystemProfile::Unknown => "unknown",
-        SystemProfile::Windows => "windows",
-        SystemProfile::Macos => "macos",
-        SystemProfile::Arch => "arch",
-        SystemProfile::Termux => "termux",
-    }
+    const NAMES: &[(SystemProfile, &str)] = &[
+        (SystemProfile::Unknown, "unknown"),
+        (SystemProfile::Windows, "windows"),
+        (SystemProfile::Macos, "macos"),
+        (SystemProfile::Arch, "arch"),
+        (SystemProfile::Termux, "termux"),
+    ];
+    NAMES
+        .iter()
+        .find(|(known, _)| *known == profile)
+        .map(|(_, name)| *name)
+        .unwrap_or("unknown")
 }
