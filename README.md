@@ -14,6 +14,12 @@ cargo install updt
 updt
 ```
 
+## Project Links
+
+- Crates.io package: https://crates.io/crates/updt
+- API documentation: https://docs.rs/updt
+- GitHub repository: https://github.com/jihaohaaaa/updt
+
 ## What It Does
 
 `updt` answers one question quickly: which of my system and developer tools can be upgraded right now?
