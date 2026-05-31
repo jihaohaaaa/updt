@@ -16,7 +16,6 @@ use std::collections::{HashMap, HashSet};
 use std::{env, future::Future, io, pin::Pin, process};
 use tokio::fs;
 
-#[cfg(windows)]
 use std::io::Write as _;
 #[cfg(windows)]
 use std::process::{Command, Stdio};
@@ -471,6 +470,7 @@ async fn upgrade_fnm() -> bool {
 }
 
 async fn upgrade_paru() -> bool {
+    notify_paru_password_attention_if_needed().await;
     run_logged_inherit(
         "paru",
         "paru",
@@ -1141,11 +1141,53 @@ async fn notify_scoop_blocked(task: &ScoopUpdateTask, blocked: &ScoopBlockedProc
 #[cfg(not(windows))]
 async fn notify_scoop_blocked(_task: &ScoopUpdateTask, _blocked: &ScoopBlockedProcessInfo) {}
 
-#[cfg(windows)]
 fn ring_terminal_bell() {
     let mut stdout = std::io::stdout();
     let _ = stdout.write_all(b"\x07");
     let _ = stdout.flush();
+}
+
+async fn notify_paru_password_attention_if_needed() {
+    if !desktop_linux_session() {
+        return;
+    }
+
+    let focus_state = terminal_focus_state().await;
+    let Some(reason) = paru_password_attention_reason(focus_state) else {
+        return;
+    };
+
+    println!("[paru] {reason}");
+    notify_desktop_attention(
+        "updt",
+        "paru AUR 升级可能正在终端等待 sudo 密码, 请回到终端确认.",
+    )
+    .await;
+}
+
+fn paru_password_attention_reason(state: TerminalFocusState) -> Option<&'static str> {
+    match state {
+        TerminalFocusState::Focused => None,
+        TerminalFocusState::NotFocused => {
+            Some("terminal 未处于桌面焦点, paru 可能需要输入 sudo 密码, 已发送提醒.")
+        }
+        TerminalFocusState::Unknown => {
+            Some("无法确认 terminal 处于桌面焦点, paru 可能需要输入 sudo 密码, 已发送提醒.")
+        }
+    }
+}
+
+async fn notify_desktop_attention(title: &str, body: &str) {
+    ring_terminal_bell();
+
+    if !command_exists("notify-send").await {
+        println!("[notify] 未安装 notify-send, 无法发送桌面提醒.");
+        return;
+    }
+
+    if let Err(err) = run_capture("notify-send", &[title, body]).await {
+        println!("[notify] 发送桌面提醒失败: {err}");
+    }
 }
 
 #[cfg(windows)]
@@ -1444,7 +1486,10 @@ exit"
 
 #[cfg(test)]
 mod tests {
-    use super::{ScoopInstallScope, ScoopUpdateTask, UpgradeFailures, build_scoop_update_tasks};
+    use super::{
+        ScoopInstallScope, ScoopUpdateTask, TerminalFocusState, UpgradeFailures,
+        build_scoop_update_tasks, paru_password_attention_reason,
+    };
     use crate::parse::ScoopListItem;
 
     #[test]
@@ -1458,6 +1503,26 @@ mod tests {
         assert_eq!(
             failures.labels,
             vec![String::from("Homebrew"), String::from("cargo (updt 自身)")]
+        );
+    }
+
+    #[test]
+    fn paru_password_attention_skips_focused_terminal() {
+        assert_eq!(
+            paru_password_attention_reason(TerminalFocusState::Focused),
+            None
+        );
+    }
+
+    #[test]
+    fn paru_password_attention_warns_when_focus_is_missing_or_unknown() {
+        assert!(
+            paru_password_attention_reason(TerminalFocusState::NotFocused)
+                .is_some_and(|reason| reason.contains("未处于桌面焦点"))
+        );
+        assert!(
+            paru_password_attention_reason(TerminalFocusState::Unknown)
+                .is_some_and(|reason| reason.contains("无法确认"))
         );
     }
 
