@@ -3,9 +3,11 @@ use crate::command::{
     run_nvim_headless_inherit,
 };
 use crate::output::{err_text, ok_text, print_section};
+#[cfg(windows)]
+use crate::parse::strip_ansi_control_sequences;
 use crate::parse::{
     ScoopBlockedProcessInfo, ScoopListItem, parse_scoop_blocked_process_output,
-    parse_scoop_list_output, strip_ansi_control_sequences,
+    parse_scoop_list_output,
 };
 use crate::profile::{desktop_linux_session, interactive_terminal};
 use crate::selection::{ScoopBlockedAction, prompt_scoop_blocked_action};
@@ -21,24 +23,56 @@ use std::process::{Command, Stdio};
 
 pub async fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
     print_section("执行升级");
-    let mut run_fail = false;
+    let mut failures = UpgradeFailures::default();
     let self_pkg = env!("CARGO_PKG_NAME");
     let pacman_plan = PacmanUpgradePlan::from_selected(state, selected);
 
-    run_fail |= !run_pacman_before_standard_targets(state, pacman_plan).await;
+    if !run_pacman_before_standard_targets(state, pacman_plan).await {
+        failures.record_target("pacman");
+    }
     let mut standard_outcome =
         run_selected_standard_targets(PRE_PACMAN_STANDARD_TARGETS, state, selected, self_pkg).await;
-    run_fail |= standard_outcome.failed;
-    run_fail |= !run_pacman_after_standard_targets(state, pacman_plan).await;
+    failures.merge(standard_outcome.failures.clone());
+    if !run_pacman_after_standard_targets(state, pacman_plan).await {
+        failures.record_target("pacman");
+    }
     let post_pacman_outcome =
         run_selected_standard_targets(POST_PACMAN_STANDARD_TARGETS, state, selected, self_pkg)
             .await;
+    failures.merge(post_pacman_outcome.failures.clone());
     standard_outcome.merge(post_pacman_outcome);
-    run_fail |= post_pacman_outcome.failed;
-    run_fail |=
-        !upgrade_cargo_self_if_needed(self_pkg, standard_outcome.cargo_self_needs_update).await;
+    if !upgrade_cargo_self_if_needed(self_pkg, standard_outcome.cargo_self_needs_update).await {
+        failures.record_label("cargo (updt 自身)");
+    }
 
-    print_upgrade_summary(selected, run_fail)
+    print_upgrade_summary(selected, &failures)
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct UpgradeFailures {
+    labels: Vec<String>,
+}
+
+impl UpgradeFailures {
+    fn record_target(&mut self, id: &str) {
+        self.record_label(target_label(id));
+    }
+
+    fn record_label(&mut self, label: &str) {
+        if !self.labels.iter().any(|item| item == label) {
+            self.labels.push(label.to_string());
+        }
+    }
+
+    fn merge(&mut self, other: Self) {
+        for label in other.labels {
+            self.record_label(&label);
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.labels.is_empty()
+    }
 }
 
 fn target_selected(selected: &[String], target: &str) -> bool {
@@ -138,9 +172,10 @@ const POST_PACMAN_STANDARD_TARGETS: &[StandardUpgradeTarget] = &[StandardUpgrade
     run: run_pkg_target,
 }];
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct StandardUpgradeOutcome {
     failed: bool,
+    failures: UpgradeFailures,
     cargo_self_needs_update: bool,
 }
 
@@ -148,6 +183,7 @@ impl StandardUpgradeOutcome {
     fn from_success(success: bool) -> Self {
         Self {
             failed: !success,
+            failures: UpgradeFailures::default(),
             cargo_self_needs_update: false,
         }
     }
@@ -155,12 +191,14 @@ impl StandardUpgradeOutcome {
     fn from_cargo(outcome: CargoUpgradeOutcome) -> Self {
         Self {
             failed: outcome.failed,
+            failures: UpgradeFailures::default(),
             cargo_self_needs_update: outcome.self_needs_update,
         }
     }
 
     fn merge(&mut self, outcome: Self) {
         self.failed |= outcome.failed;
+        self.failures.merge(outcome.failures);
         self.cargo_self_needs_update |= outcome.cargo_self_needs_update;
     }
 }
@@ -173,7 +211,11 @@ async fn run_selected_standard_targets(
 ) -> StandardUpgradeOutcome {
     let mut outcome = StandardUpgradeOutcome::default();
     for target in selected_standard_targets(targets, selected) {
-        outcome.merge((target.run)(state, self_pkg).await);
+        let target_outcome = (target.run)(state, self_pkg).await;
+        if target_outcome.failed {
+            outcome.failures.record_target(target.id);
+        }
+        outcome.merge(target_outcome);
     }
     outcome
 }
@@ -548,7 +590,7 @@ async fn run_logged_nvim_headless(
     }
 }
 
-fn print_upgrade_summary(selected: &[String], run_fail: bool) -> bool {
+fn print_upgrade_summary(selected: &[String], failures: &UpgradeFailures) -> bool {
     print_section("汇总");
     println!(
         "已选择升级项: {}",
@@ -558,8 +600,12 @@ fn print_upgrade_summary(selected: &[String], run_fail: bool) -> bool {
             .collect::<Vec<_>>()
             .join(", ")
     );
-    if run_fail {
+    if !failures.is_empty() {
         println!("{}", err_text("存在升级失败项."));
+        println!("失败升级项:");
+        for label in &failures.labels {
+            println!("  - {label}");
+        }
         return false;
     }
     println!("{}", ok_text("所有已选升级项执行完成."));
@@ -1058,11 +1104,7 @@ fn scoop_scope_bool_literal(scope: ScoopInstallScope) -> &'static str {
     }
 }
 
-#[cfg(not(windows))]
-async fn resolve_scoop_app_dir(_task: &ScoopUpdateTask) -> io::Result<String> {
-    Err(io::Error::other("仅支持 Windows Scoop 目录解析"))
-}
-
+#[cfg(windows)]
 fn first_nonempty_output_line(output: &str) -> Option<String> {
     strip_ansi_control_sequences(output)
         .lines()
@@ -1071,6 +1113,7 @@ fn first_nonempty_output_line(output: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+#[cfg(windows)]
 fn ps_single_quote(value: &str) -> String {
     value.replace('\'', "''")
 }
@@ -1401,8 +1444,22 @@ exit"
 
 #[cfg(test)]
 mod tests {
-    use super::{ScoopInstallScope, ScoopUpdateTask, build_scoop_update_tasks};
+    use super::{ScoopInstallScope, ScoopUpdateTask, UpgradeFailures, build_scoop_update_tasks};
     use crate::parse::ScoopListItem;
+
+    #[test]
+    fn records_failure_labels_once() {
+        let mut failures = UpgradeFailures::default();
+
+        failures.record_target("brew");
+        failures.record_label("cargo (updt 自身)");
+        failures.record_target("brew");
+
+        assert_eq!(
+            failures.labels,
+            vec![String::from("Homebrew"), String::from("cargo (updt 自身)")]
+        );
+    }
 
     #[test]
     fn builds_one_local_scoop_task() {

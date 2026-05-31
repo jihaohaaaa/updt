@@ -250,3 +250,62 @@ fn parse_scoop_blocked_action(answer: &str) -> Option<ScoopBlockedAction> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ScoopBlockedAction, default_yes_answer, parse_scoop_blocked_action,
+        resolve_cli_selection_quiet,
+    };
+
+    #[test]
+    fn default_yes_answer_accepts_empty_and_yes() {
+        assert!(default_yes_answer(""));
+        assert!(default_yes_answer(" y "));
+        assert!(default_yes_answer("YES"));
+    }
+
+    #[test]
+    fn default_yes_answer_rejects_other_answers() {
+        assert!(!default_yes_answer("n"));
+        assert!(!default_yes_answer("no"));
+        assert!(!default_yes_answer("later"));
+    }
+
+    #[test]
+    fn parses_scoop_blocked_actions() {
+        assert_eq!(
+            parse_scoop_blocked_action("kill"),
+            Some(ScoopBlockedAction::KillAndRetry)
+        );
+        assert_eq!(
+            parse_scoop_blocked_action("s"),
+            Some(ScoopBlockedAction::Skip)
+        );
+        assert_eq!(
+            parse_scoop_blocked_action("Q"),
+            Some(ScoopBlockedAction::Abort)
+        );
+        assert_eq!(parse_scoop_blocked_action(""), None);
+    }
+
+    #[test]
+    fn resolves_cli_selection_quiet_dedupes_selected_and_skipped() {
+        let requested = vec![
+            "brew".to_string(),
+            "npm".to_string(),
+            "brew".to_string(),
+            "missing".to_string(),
+            "missing".to_string(),
+        ];
+        let upgradable = vec!["brew".to_string(), "cargo".to_string()];
+
+        assert_eq!(
+            resolve_cli_selection_quiet(&requested, &upgradable),
+            (
+                vec!["brew".to_string()],
+                vec!["npm".to_string(), "missing".to_string()]
+            )
+        );
+    }
+}

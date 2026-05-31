@@ -302,3 +302,57 @@ fn pacman_items(state: &AppState) -> Vec<String> {
 fn pkg_items(state: &AppState) -> Vec<String> {
     state.pkg.updatable_items.clone()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        section_title, target_enabled, target_label, target_state_flags, target_update_summary,
+        updatable_items_for_target,
+    };
+    use crate::state::AppState;
+
+    #[test]
+    fn returns_target_metadata_and_unknown_defaults() {
+        assert_eq!(target_label("brew"), "Homebrew");
+        assert_eq!(section_title("pkg"), "pkg (Termux)");
+        assert_eq!(target_update_summary("nvim"), "可执行更新");
+        assert_eq!(target_label("missing"), "unknown");
+        assert_eq!(target_update_summary("missing"), "发现可升级项");
+    }
+
+    #[test]
+    fn reports_enabled_state_from_flags() {
+        let mut state = AppState::default();
+        state.enable.rustup = true;
+        state.rustup.installed = true;
+
+        assert!(target_enabled(&state, "rustup"));
+        assert!(!target_enabled(&state, "brew"));
+        assert!(!target_enabled(&state, "missing"));
+    }
+
+    #[test]
+    fn cargo_flags_report_missing_cargo_update() {
+        let mut state = AppState::default();
+        state.enable.cargo = true;
+        state.cargo.installed = true;
+
+        let flags = target_state_flags(&state, "cargo").expect("cargo target flags");
+
+        assert!(flags.enabled);
+        assert!(flags.installed);
+        assert!(flags.needs_cargo_updater);
+    }
+
+    #[test]
+    fn brew_updatable_items_merge_formulae_and_casks() {
+        let mut state = AppState::default();
+        state.brew.formula_list = vec!["git".to_string()];
+        state.brew.cask_list = vec!["visual-studio-code".to_string()];
+
+        assert_eq!(
+            updatable_items_for_target(&state, "brew"),
+            vec!["git".to_string(), "visual-studio-code".to_string()]
+        );
+    }
+}

@@ -11,7 +11,7 @@ use crate::parse::{
     parse_fnm_version_token, parse_scoop_status_output,
 };
 use crate::profile::parse_profile;
-use crate::state::AppState;
+use crate::state::{AppState, SystemProfile};
 
 pub struct CheckResult {
     pub target: String,
@@ -447,6 +447,7 @@ async fn check_rustup_quiet(state: &mut AppState, logs: &mut Vec<String>) {
         return;
     };
     record_rustup_status(state, logs, status, &output);
+    recommend_windows_gnu_toolchain(state, logs).await;
 }
 
 async fn load_rustup_check_output(
@@ -489,6 +490,47 @@ fn record_rustup_status(state: &mut AppState, logs: &mut Vec<String>, status: i3
             );
         }
     }
+}
+
+async fn recommend_windows_gnu_toolchain(state: &mut AppState, logs: &mut Vec<String>) {
+    if state.system_profile != SystemProfile::Windows {
+        return;
+    }
+    logs.push(log_pkg_line(
+        "rustup",
+        "正在检查 Windows GNU toolchain (rustup toolchain list)...",
+        MsgKind::Info,
+    ));
+    let Ok((status, output)) = run_capture("rustup", &["toolchain", "list"]).await else {
+        logs.push(log_pkg_line(
+            "rustup",
+            "建议检查失败: 无法执行 rustup toolchain list.",
+            MsgKind::Warn,
+        ));
+        return;
+    };
+    if status != 0 {
+        logs.push(log_pkg_line(
+            "rustup",
+            &format!("建议检查失败 (rustup toolchain list, exit {status})."),
+            MsgKind::Warn,
+        ));
+        return;
+    }
+    if !rustup_toolchains_include_windows_gnu(&output) {
+        logs.push(log_pkg_line(
+            "rustup",
+            "建议安装 GNU toolchain: rustup toolchain install stable-x86_64-pc-windows-gnu",
+            MsgKind::Warn,
+        ));
+    }
+}
+
+fn rustup_toolchains_include_windows_gnu(output: &str) -> bool {
+    output
+        .lines()
+        .map(str::trim)
+        .any(|line| line.contains("windows-gnu"))
 }
 
 async fn check_fnm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
@@ -1043,6 +1085,88 @@ fn pkg_name_from_token(token: &str) -> Option<String> {
     }
     let name = token.split('/').next().unwrap_or(token);
     (!name.is_empty()).then(|| name.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        NVIM_COUNT_PROBES, add_nvim_component_if_needed, nvim_count_from_output,
+        package_names_from_lines, pacman_status_means_no_updates, pkg_updatable_name,
+        pkg_updatable_names, rustup_toolchains_include_windows_gnu,
+    };
+
+    #[test]
+    fn detects_windows_gnu_toolchain() {
+        let output = "stable-x86_64-pc-windows-msvc (default)\nstable-x86_64-pc-windows-gnu\n";
+
+        assert!(rustup_toolchains_include_windows_gnu(output));
+    }
+
+    #[test]
+    fn reports_missing_windows_gnu_toolchain() {
+        let output = "stable-x86_64-pc-windows-msvc (default)\nnightly-x86_64-pc-windows-msvc\n";
+
+        assert!(!rustup_toolchains_include_windows_gnu(output));
+    }
+
+    #[test]
+    fn extracts_package_names_from_first_column() {
+        let output = "git 2.0 -> 2.1\n\nnodejs 20.0 -> 22.0\n";
+
+        assert_eq!(
+            package_names_from_lines(output),
+            vec!["git".to_string(), "nodejs".to_string()]
+        );
+    }
+
+    #[test]
+    fn recognizes_pacman_no_update_statuses() {
+        assert!(pacman_status_means_no_updates(2, "", true));
+        assert!(pacman_status_means_no_updates(1, "", false));
+        assert!(!pacman_status_means_no_updates(1, "pacman 1 -> 2", false));
+        assert!(!pacman_status_means_no_updates(0, "", true));
+    }
+
+    #[test]
+    fn parses_pkg_updatable_names_and_ignores_noise() {
+        let output = "Listing...\nlibc/stable 1.0 aarch64 [upgradable from: 0.9]\nWARNING: apt does not have a stable CLI interface.\nvim/now 9.0 aarch64 [upgradable from: 8.0]\n";
+
+        assert_eq!(
+            pkg_updatable_names(output),
+            vec!["libc".to_string(), "vim".to_string()]
+        );
+        assert_eq!(pkg_updatable_name("not-a-package"), None);
+    }
+
+    #[test]
+    fn nvim_count_from_output_extracts_marker_or_marks_failed() {
+        let probe = &NVIM_COUNT_PROBES[0];
+        let mut failed = false;
+        let mut logs = Vec::new();
+
+        assert_eq!(
+            nvim_count_from_output(&mut failed, &mut logs, probe, "noise\nUPDT_LAZY_COUNT=3\n"),
+            Some(3)
+        );
+        assert!(!failed);
+
+        assert_eq!(
+            nvim_count_from_output(&mut failed, &mut logs, probe, "noise"),
+            None
+        );
+        assert!(failed);
+    }
+
+    #[test]
+    fn adds_nvim_component_only_when_count_is_positive() {
+        let probe = &NVIM_COUNT_PROBES[1];
+        let mut components = Vec::new();
+
+        add_nvim_component_if_needed(&mut components, probe, 0);
+        add_nvim_component_if_needed(&mut components, probe, 2);
+
+        assert_eq!(components, vec!["Mason tools: 2 项可更新".to_string()]);
+    }
 }
 
 struct NvimAvailabilityProbe {

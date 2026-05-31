@@ -768,3 +768,80 @@ fn confirm_key_response(code: &KeyCode, confirm_selected: bool) -> Option<bool> 
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        clean_status_body, confirm_key_response, message_key_response, selected_upgradable_targets,
+        summarize_target_status,
+    };
+    use crate::output::MsgKind;
+    use crate::state::AppState;
+    use crossterm::event::KeyCode;
+
+    #[test]
+    fn summarize_target_status_reports_skipped_unknown_and_updates() {
+        let state = AppState::default();
+        let (_, skipped_summary) = summarize_target_status("brew", &state);
+        let (_, unknown_summary) = summarize_target_status("missing", &state);
+
+        assert_eq!(skipped_summary, "已跳过");
+        assert_eq!(unknown_summary, "未知状态");
+
+        let mut updated = AppState::default();
+        updated.enable.nvim = true;
+        updated.nvim.installed = true;
+        updated.nvim.has_updates = true;
+        let (kind, summary) = summarize_target_status("nvim", &updated);
+
+        assert!(matches!(kind, MsgKind::Warn));
+        assert_eq!(summary, "可执行更新");
+    }
+
+    #[test]
+    fn summarize_target_status_prioritizes_cargo_updater_warning() {
+        let mut state = AppState::default();
+        state.enable.cargo = true;
+        state.cargo.installed = true;
+        state.cargo.check_failed = true;
+        state.cargo.has_updates = true;
+
+        let (_, summary) = summarize_target_status("cargo", &state);
+
+        assert_eq!(summary, "缺少 cargo-update");
+    }
+
+    #[test]
+    fn selected_upgradable_targets_filters_by_selected_flags() {
+        let targets = vec![
+            "brew".to_string(),
+            "cargo".to_string(),
+            "rustup".to_string(),
+        ];
+        let selected = vec![true, false, true];
+
+        assert_eq!(
+            selected_upgradable_targets(&targets, &selected),
+            vec!["brew".to_string(), "rustup".to_string()]
+        );
+    }
+
+    #[test]
+    fn message_and_confirm_key_responses_follow_prompt_semantics() {
+        assert_eq!(message_key_response(&KeyCode::Char('y')), Some(true));
+        assert_eq!(message_key_response(&KeyCode::Char('N')), Some(false));
+        assert_eq!(message_key_response(&KeyCode::Char('x')), None);
+
+        assert_eq!(confirm_key_response(&KeyCode::Enter, true), Some(true));
+        assert_eq!(confirm_key_response(&KeyCode::Enter, false), Some(false));
+        assert_eq!(confirm_key_response(&KeyCode::Esc, true), Some(false));
+        assert_eq!(confirm_key_response(&KeyCode::Tab, true), None);
+    }
+
+    #[test]
+    fn clean_status_body_strips_empty_lines() {
+        let lines = vec![" first ".to_string(), "".to_string(), "second".to_string()];
+
+        assert_eq!(clean_status_body(&lines), " first   second");
+    }
+}
