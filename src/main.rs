@@ -22,7 +22,8 @@ use crate::flow::check::{
     any_check_failed, build_upgradable_targets, resolve_check_targets, run_checks, run_checks_plain,
 };
 use crate::flow::interactive::{
-    InteractiveResult, offer_install_cargo_update, run_interactive_flow,
+    InteractiveResult, offer_install_cargo_binstall, offer_install_cargo_update,
+    run_interactive_flow,
 };
 use crate::output::{color_bold, ok_text, print_exit_signal_message, print_section, warn_text};
 use crate::profile::{interactive_terminal, parse_profile};
@@ -56,6 +57,7 @@ async fn run_app() -> i32 {
     print_text_header_if_needed(&ctx);
     run_checks_for_context(&mut ctx).await;
     offer_install_cargo_update(&mut ctx.state).await;
+    offer_install_cargo_binstall(&ctx.state).await;
     finish_after_checks(&mut ctx).await
 }
 

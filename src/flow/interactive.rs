@@ -9,8 +9,8 @@ use tokio::task::block_in_place;
 use crate::checks::{check_cargo_quiet, merge_check_result};
 use crate::command::run_inherit;
 use crate::flow::check::{
-    any_check_failed, build_upgradable_targets, cargo_update_missing, resolve_check_targets,
-    run_checks_tui,
+    any_check_failed, build_upgradable_targets, cargo_binstall_missing, cargo_update_missing,
+    resolve_check_targets, run_checks_tui,
 };
 use crate::output::{err_text, print_exit_signal_message, print_section, warn_text};
 use crate::profile::{interactive_terminal, parse_profile};
@@ -72,6 +72,23 @@ pub async fn offer_install_cargo_update_tui(
     handle_cargo_update_install_tui_result(terminal, state, install_result).await
 }
 
+pub async fn offer_install_cargo_binstall_tui(
+    terminal: &mut AppTerminal,
+    state: &AppState,
+) -> io::Result<()> {
+    if !cargo_binstall_missing(state).await {
+        return Ok(());
+    }
+
+    if !confirm_cargo_binstall_install_tui(terminal).await? {
+        return Ok(());
+    }
+
+    let install_result =
+        run_inherit_outside_tui(terminal, "cargo", &["install", "cargo-binstall"]).await;
+    show_cargo_binstall_tui_result(terminal, install_result).await
+}
+
 async fn confirm_cargo_update_install_tui(terminal: &mut AppTerminal) -> io::Result<bool> {
     wait_tui_message(
         terminal,
@@ -84,6 +101,43 @@ async fn confirm_cargo_update_install_tui(terminal: &mut AppTerminal) -> io::Res
         ],
     )
     .await
+}
+
+async fn confirm_cargo_binstall_install_tui(terminal: &mut AppTerminal) -> io::Result<bool> {
+    wait_tui_message(
+        terminal,
+        "cargo-binstall",
+        &[
+            "未安装 cargo-binstall.".to_string(),
+            "建议安装它, 以便 cargo 管理的软件可优先使用预编译二进制快速安装或升级.".to_string(),
+            "是否执行 cargo install cargo-binstall? 默认: Yes".to_string(),
+            "".to_string(),
+            "Enter/Y: 直连终端执行    N/q/Esc: 跳过".to_string(),
+        ],
+    )
+    .await
+}
+
+async fn show_cargo_binstall_tui_result(
+    terminal: &mut AppTerminal,
+    install_result: io::Result<bool>,
+) -> io::Result<()> {
+    let message = match install_result {
+        Ok(true) => "cargo-binstall 安装完成.".to_string(),
+        Ok(false) => "cargo-binstall 安装失败 (退出码非 0).".to_string(),
+        Err(err) => format!("cargo-binstall 安装失败: {err}"),
+    };
+    let _ = wait_tui_message(
+        terminal,
+        "cargo-binstall",
+        &[
+            message,
+            "".to_string(),
+            "Enter: 继续    q/Esc: 继续".to_string(),
+        ],
+    )
+    .await?;
+    Ok(())
 }
 
 async fn handle_cargo_update_install_tui_result(
@@ -182,11 +236,41 @@ pub async fn offer_install_cargo_update(state: &mut AppState) {
     handle_cargo_update_install_text_result(state, install_result).await;
 }
 
+pub async fn offer_install_cargo_binstall(state: &AppState) {
+    if !interactive_terminal() || !cargo_binstall_missing(state).await {
+        return;
+    }
+
+    print_section("cargo-binstall");
+    println!("未安装 cargo-binstall.");
+    println!("建议安装它, 以便 cargo 管理的软件可优先使用预编译二进制快速安装或升级.");
+    if !confirm_cargo_binstall_install_text().await {
+        return;
+    }
+
+    println!("[cargo] 正在执行: cargo install cargo-binstall");
+    match run_inherit("cargo", &["install", "cargo-binstall"]).await {
+        Ok(true) => println!("[cargo] cargo-binstall 安装完成."),
+        _ => println!("{}", err_text("[cargo] cargo-binstall 安装失败.")),
+    }
+}
+
 async fn confirm_cargo_update_install_text() -> bool {
     match confirm_default_yes("是否执行 cargo install cargo-update").await {
         Some(true) => true,
         Some(false) => {
             println!("{}", warn_text("已跳过 cargo-update 安装."));
+            false
+        }
+        None => exit_after_interrupted_prompt(),
+    }
+}
+
+async fn confirm_cargo_binstall_install_text() -> bool {
+    match confirm_default_yes("是否执行 cargo install cargo-binstall").await {
+        Some(true) => true,
+        Some(false) => {
+            println!("{}", warn_text("已跳过 cargo-binstall 安装."));
             false
         }
         None => exit_after_interrupted_prompt(),
@@ -239,6 +323,7 @@ pub async fn run_interactive_flow(
     let targets = resolve_check_targets(state, requested_updates);
     run_checks_tui(&mut session.terminal, state, &targets, start_time).await?;
     offer_install_cargo_update_tui(&mut session.terminal, state).await?;
+    offer_install_cargo_binstall_tui(&mut session.terminal, state).await?;
     continue_interactive_after_checks(
         &mut session.terminal,
         state,

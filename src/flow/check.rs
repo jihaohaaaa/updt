@@ -409,3 +409,10 @@ pub async fn cargo_update_missing(state: &AppState) -> bool {
         && command_exists("cargo").await
         && !command_exists("cargo-install-update").await
 }
+
+pub async fn cargo_binstall_missing(state: &AppState) -> bool {
+    state.enable.cargo
+        && state.cargo.installed
+        && command_exists("cargo").await
+        && !command_exists("cargo-binstall").await
+}

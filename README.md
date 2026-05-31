@@ -113,6 +113,7 @@ cargo install cargo-update
 Target-specific notes:
 
 - `cargo` checks require `cargo-install-update` in `PATH`.
+- `cargo-binstall` is recommended for faster binary installation of cargo-managed tools.
 - Neovim checks require `nvim` and look for Lazy and Mason update availability.
 - Termux `pkg` checks use `apt list --upgradable`.
 - `pacman` upgrades may use `sudo` or `pkexec`, depending on terminal focus and desktop session state.
