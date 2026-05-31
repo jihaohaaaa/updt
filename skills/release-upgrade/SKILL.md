@@ -31,25 +31,31 @@ Use this skill when the request includes one of these goals.
 - Update root package version in `Cargo.lock`.
 - If README contains versioned install examples, keep them aligned.
 
-3. Run quality gates.
+3. Check dependency updates.
+- Run `cargo upgrade --dry-run` to inspect available direct dependency upgrades.
+- If dependency upgrades should be included in the release, run `cargo upgrade` and review the `Cargo.toml` diff.
+- Run `cargo update` to refresh `Cargo.lock`, then review the `Cargo.lock` diff.
+- Include any accepted dependency changes in the release commit and rerun quality gates after the dependency check.
+
+4. Run quality gates.
 - Run `cargo fmt`.
 - Run `cargo clippy --all-targets -- -D warnings`.
 - Run `cargo check`.
 
-4. Validate release artifacts.
+5. Validate release artifacts.
 - Ensure fish completion behavior still matches current CLI contract.
 - Ensure README command examples still match implemented subcommands.
 
-5. Commit and push.
+6. Commit and push.
 - Stage only release related files.
 - Commit with message `chore(release): bump version to X.Y.Z`.
 - Push to the active remote branch.
 
-6. Publish.
+7. Publish.
 - Run `cargo publish` from project root.
 - If publish fails because version already exists, bump patch version and repeat from step 2.
 
-7. Tag release.
+8. Tag release.
 - Create annotated tag `vX.Y.Z` on the release commit.
 - Push tag to remote with `git push origin vX.Y.Z`.
 - If tag already exists and points to another commit, stop and ask before rewriting.

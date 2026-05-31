@@ -16,6 +16,19 @@ Update version fields.
 # edit Cargo.toml and Cargo.lock
 ```
 
+Check dependency updates.
+
+```bash
+cargo upgrade --dry-run
+# If accepted dependency upgrades should be included:
+cargo upgrade
+cargo update
+git diff -- Cargo.toml Cargo.lock
+```
+
+If `cargo upgrade` is unavailable, install `cargo-edit` first or stop and report that the dependency upgrade check could not be completed.
+If `cargo update` changes `Cargo.lock`, include the lockfile change in the release commit and rerun the quality checks below.
+
 Run quality checks.
 
 ```bash
