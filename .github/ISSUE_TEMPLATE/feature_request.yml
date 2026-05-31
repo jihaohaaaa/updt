@@ -1,0 +1,36 @@
+name: Feature request
+description: Suggest an improvement or new target
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What workflow should this improve?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior you would like.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Relevant platform
+      options:
+        - macOS
+        - Windows
+        - Arch Linux
+        - Termux
+        - Cross-platform
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional notes

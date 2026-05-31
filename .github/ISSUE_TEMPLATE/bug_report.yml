@@ -1,0 +1,53 @@
+name: Bug report
+description: Report an updt behavior problem
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting a problem. Please remove secrets or tokens from logs before submitting.
+  - type: input
+    id: version
+    attributes:
+      label: updt version
+      description: Run `updt --version`.
+      placeholder: updt 0.1.43
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Windows
+        - Arch Linux
+        - Termux
+        - Other Linux
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: target
+    attributes:
+      label: Target package manager
+      placeholder: npm, cargo, nvim, rustup, fnm, scoop, paru, flatpak, pacman, pkg, brew
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      render: text
