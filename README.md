@@ -5,9 +5,55 @@
 [![CI](https://github.com/jihaohaaaa/updt/actions/workflows/ci.yml/badge.svg)](https://github.com/jihaohaaaa/updt/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-`updt` is a cross-platform system update helper written in Rust. It checks upgrade candidates across supported package managers, presents an interactive selector, and then runs the selected upgrades with the original package manager commands.
+`updt` is a Rust command-line tool that checks and runs updates across your development package managers from one interactive workflow.
 
-It is designed for people who regularly maintain the same development tools across macOS, Windows, Arch Linux, and Termux, and want one small command to answer: what can be upgraded now?
+Instead of remembering separate update commands for Homebrew, npm, cargo, rustup, fnm, Scoop, paru, pacman, Flatpak, Termux `pkg`, and Neovim plugins, run `updt`, review what has updates, choose the targets you want, and let the original package managers do the work.
+
+```bash
+cargo install updt
+updt
+```
+
+## What It Does
+
+`updt` answers one question quickly: which of my system and developer tools can be upgraded right now?
+
+It checks supported targets in parallel, shows the results in a terminal selector, and upgrades only the targets you confirm. It does not replace any package manager or maintain its own package database; it orchestrates the tools already installed on your machine.
+
+## Why Use It
+
+- One command for routine update checks across multiple ecosystems.
+- Interactive selection before anything is upgraded.
+- Direct target updates for scripts or muscle memory, such as `updt update npm cargo`.
+- Platform-aware defaults for macOS, Windows, Arch Linux, and Termux.
+- Small Rust binary with no shell script bootstrap step.
+
+## Quick Start
+
+Install the latest release from crates.io:
+
+```bash
+cargo install updt
+```
+
+Run the interactive update flow:
+
+```bash
+updt
+```
+
+Update specific targets without opening the selector:
+
+```bash
+updt update npm cargo
+updt update npm,cargo
+```
+
+Install fish completions:
+
+```bash
+updt fish
+```
 
 ## Features
 
@@ -18,7 +64,7 @@ It is designed for people who regularly maintain the same development tools acro
 - Fish shell completion installer.
 - Uses existing package manager commands and forwards their output.
 
-## Supported Targets
+## Supported Update Targets
 
 | Target | What it updates | Notes |
 | --- | --- | --- |
@@ -36,7 +82,7 @@ It is designed for people who regularly maintain the same development tools acro
 
 Windows system package managers `winget` and `choco` are intentionally unsupported.
 
-## System Policy
+## Platform Defaults
 
 `updt` enables targets by OS profile:
 
@@ -50,35 +96,32 @@ Windows system package managers `winget` and `choco` are intentionally unsupport
 
 Unsupported or missing commands are skipped during checks.
 
-## Install
+## Requirements
 
-Install the latest release from crates.io:
-
-```bash
-cargo install updt
-```
-
-For cargo package checks, install `cargo-update` so `cargo-install-update` is available:
+Install the package managers you want `updt` to control. For cargo package checks, install `cargo-update` so `cargo-install-update` is available:
 
 ```bash
 cargo install cargo-update
 ```
 
-## Usage
+Target-specific notes:
 
-Run the interactive flow:
+- `cargo` checks require `cargo-install-update` in `PATH`.
+- Neovim checks require `nvim` and look for Lazy and Mason update availability.
+- Termux `pkg` checks use `apt list --upgradable`.
+- `pacman` upgrades may use `sudo` or `pkexec`, depending on terminal focus and desktop session state.
 
-```bash
-updt
-```
+## Interactive Flow
 
-The default flow has three stages:
+Running `updt` starts a three-stage workflow:
 
 1. Check upgrade candidates.
 2. Select targets to upgrade.
 3. Run upgrades for selected targets.
 
-Interactive selector controls:
+The check stage runs in parallel across enabled targets. The upgrade stage runs the underlying package manager commands and forwards their output.
+
+Selector controls:
 
 | Key | Action |
 | --- | --- |
@@ -87,10 +130,18 @@ Interactive selector controls:
 | `Enter` | Confirm selection |
 | `q` / `Esc` | Quit selection |
 
+## CLI Reference
+
 Show the installed version:
 
 ```bash
 updt --version
+```
+
+Run the default interactive workflow:
+
+```bash
+updt
 ```
 
 Update selected targets without the interactive selector:
@@ -106,14 +157,6 @@ Install fish completion to `~/.config/fish/completions/updt.fish`:
 ```bash
 updt fish
 ```
-
-## Behavior Notes
-
-- `cargo` checks require `cargo-install-update` in `PATH`.
-- `pacman` upgrade uses `sudo pacman -Syu` when the terminal is focused, or `pkexec pacman -Syu` on desktop Linux when the terminal is not focused.
-- Termux `pkg` checks use `apt list --upgradable`.
-- Neovim checks run headless and look for Lazy and Mason update availability.
-- `updt` does not replace package managers; it orchestrates the installed tools already on the system.
 
 ## Development
 
