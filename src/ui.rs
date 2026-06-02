@@ -567,6 +567,59 @@ fn render_message_on_checks(
     render_status_line(frame, chunks[2], status);
 }
 
+pub struct ChecksConfirmView<'a> {
+    pub state: &'a AppState,
+    pub targets: &'a [String],
+    pub start_time: &'a str,
+    pub title: &'a str,
+    pub lines: &'a [String],
+}
+
+pub async fn wait_tui_float_on_checks(
+    terminal: &mut AppTerminal,
+    view: &ChecksConfirmView<'_>,
+) -> io::Result<bool> {
+    let clean_lines = clean_display_lines(view.lines);
+    let mut confirm_selected = true;
+
+    loop {
+        draw_terminal(terminal, |frame| {
+            render_checks_confirm_view(frame, view, &clean_lines, confirm_selected);
+        })
+        .await?;
+
+        let Some(key) = read_pressed_key_event(TUI_KEY_TIMEOUT).await? else {
+            continue;
+        };
+        if let Some(response) = handle_confirm_key(&key.code, &mut confirm_selected) {
+            return Ok(response);
+        }
+    }
+}
+
+fn render_checks_confirm_view(
+    frame: &mut ratatui::Frame<'_>,
+    view: &ChecksConfirmView<'_>,
+    clean_lines: &[String],
+    confirm_selected: bool,
+) {
+    let area = frame.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(5), Constraint::Min(1)])
+        .split(area);
+
+    render_check_summary(
+        frame,
+        chunks[0],
+        chunks[1],
+        view.state,
+        view.targets,
+        view.start_time,
+    );
+    render_confirm_popup(frame, area, view.title, clean_lines, confirm_selected);
+}
+
 pub struct SelectionConfirmView<'a> {
     pub state: &'a AppState,
     pub check_targets: &'a [String],

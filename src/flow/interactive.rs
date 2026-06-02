@@ -17,8 +17,9 @@ use crate::profile::{interactive_terminal, parse_profile};
 use crate::selection::{confirm_default_yes, resolve_cli_selection_quiet};
 use crate::state::{AppState, section_title, target_label};
 use crate::ui::{
-    AppTerminal, SelectionConfirmView, TerminalGuard, select_targets_tui_with_checks,
-    wait_tui_float_on_selection, wait_tui_message, wait_tui_message_on_checks,
+    AppTerminal, ChecksConfirmView, SelectionConfirmView, TerminalGuard,
+    select_targets_tui_with_checks, wait_tui_float_on_checks, wait_tui_float_on_selection,
+    wait_tui_message, wait_tui_message_on_checks,
 };
 
 async fn run_inherit_outside_tui(
@@ -75,12 +76,14 @@ pub async fn offer_install_cargo_update_tui(
 pub async fn offer_install_cargo_binstall_tui(
     terminal: &mut AppTerminal,
     state: &AppState,
+    targets: &[String],
+    start_time: &str,
 ) -> io::Result<()> {
     if !cargo_binstall_missing(state).await {
         return Ok(());
     }
 
-    if !confirm_cargo_binstall_install_tui(terminal).await? {
+    if !confirm_cargo_binstall_install_tui(terminal, state, targets, start_time).await? {
         return Ok(());
     }
 
@@ -103,19 +106,27 @@ async fn confirm_cargo_update_install_tui(terminal: &mut AppTerminal) -> io::Res
     .await
 }
 
-async fn confirm_cargo_binstall_install_tui(terminal: &mut AppTerminal) -> io::Result<bool> {
-    wait_tui_message(
-        terminal,
-        "cargo-binstall",
-        &[
-            "未安装 cargo-binstall.".to_string(),
-            "建议安装它, 以便 cargo 管理的软件可优先使用预编译二进制快速安装或升级.".to_string(),
-            "是否执行 cargo install cargo-binstall? 默认: Yes".to_string(),
-            "".to_string(),
-            "Enter/Y: 直连终端执行    N/q/Esc: 跳过".to_string(),
-        ],
-    )
-    .await
+async fn confirm_cargo_binstall_install_tui(
+    terminal: &mut AppTerminal,
+    state: &AppState,
+    targets: &[String],
+    start_time: &str,
+) -> io::Result<bool> {
+    let lines = [
+        "未安装 cargo-binstall.".to_string(),
+        "建议安装它, 以便 cargo 管理的软件可优先使用预编译二进制快速安装或升级.".to_string(),
+        "是否执行 cargo install cargo-binstall?".to_string(),
+        "".to_string(),
+        "左右键: 选择按钮    Enter: 确认".to_string(),
+    ];
+    let confirm_view = ChecksConfirmView {
+        state,
+        targets,
+        start_time,
+        title: "安装 cargo-binstall",
+        lines: &lines,
+    };
+    wait_tui_float_on_checks(terminal, &confirm_view).await
 }
 
 async fn show_cargo_binstall_tui_result(
@@ -323,7 +334,7 @@ pub async fn run_interactive_flow(
     let targets = resolve_check_targets(state, requested_updates);
     run_checks_tui(&mut session.terminal, state, &targets, start_time).await?;
     offer_install_cargo_update_tui(&mut session.terminal, state).await?;
-    offer_install_cargo_binstall_tui(&mut session.terminal, state).await?;
+    offer_install_cargo_binstall_tui(&mut session.terminal, state, &targets, start_time).await?;
     continue_interactive_after_checks(
         &mut session.terminal,
         state,
