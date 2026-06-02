@@ -466,19 +466,43 @@ async fn load_rustup_check_output(
     Some((status, output))
 }
 
+fn is_identical_rustup_update(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    if let Some(idx) = lower.find("update available:") {
+        let versions = &line[idx + "update available:".len()..];
+        if let Some(arrow_idx) = versions.find("->") {
+            let left = versions[..arrow_idx].trim();
+            let right = versions[arrow_idx + 2..].trim();
+            return !left.is_empty() && left == right;
+        }
+    }
+    false
+}
+
 fn record_rustup_status(state: &mut AppState, logs: &mut Vec<String>, status: i32, output: &str) {
     match status {
         0 => logs.push(log_pkg_line("rustup", "toolchain 已是最新.", MsgKind::Ok)),
         100 => {
-            state.rustup.has_updates = true;
-            logs.push(log_pkg_line(
-                "rustup",
-                "以下 toolchain 可升级:",
-                MsgKind::Info,
-            ));
+            let mut updatable = Vec::new();
             for line in output.lines().map(str::trim).filter(|x| !x.is_empty()) {
-                state.rustup.updatable_items.push(line.to_string());
-                logs.push(format!("  - {line}"));
+                if !is_identical_rustup_update(line) {
+                    updatable.push(line.to_string());
+                }
+            }
+
+            if updatable.is_empty() {
+                logs.push(log_pkg_line("rustup", "toolchain 已是最新.", MsgKind::Ok));
+            } else {
+                state.rustup.has_updates = true;
+                logs.push(log_pkg_line(
+                    "rustup",
+                    "以下 toolchain 可升级:",
+                    MsgKind::Info,
+                ));
+                for line in updatable {
+                    state.rustup.updatable_items.push(line.clone());
+                    logs.push(format!("  - {line}"));
+                }
             }
         }
         _ => {
@@ -1090,10 +1114,62 @@ fn pkg_name_from_token(token: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        NVIM_COUNT_PROBES, add_nvim_component_if_needed, nvim_count_from_output,
-        package_names_from_lines, pacman_status_means_no_updates, pkg_updatable_name,
-        pkg_updatable_names, rustup_toolchains_include_windows_gnu,
+        NVIM_COUNT_PROBES, add_nvim_component_if_needed, is_identical_rustup_update,
+        nvim_count_from_output, package_names_from_lines, pacman_status_means_no_updates,
+        pkg_updatable_name, pkg_updatable_names, record_rustup_status,
+        rustup_toolchains_include_windows_gnu,
     };
+
+    #[test]
+    fn identifies_identical_rustup_updates() {
+        assert!(is_identical_rustup_update(
+            "stable-x86_64-pc-windows-msvc - update available: 1.96.0 (ac68faa20 2026-05-25) -> 1.96.0 (ac68faa20 2026-05-25)"
+        ));
+        assert!(is_identical_rustup_update(
+            "nightly-x86_64-pc-windows-msvc - update available: 1.98.0-nightly -> 1.98.0-nightly"
+        ));
+        assert!(!is_identical_rustup_update(
+            "stable-x86_64-pc-windows-msvc - update available: 1.95.0 -> 1.96.0"
+        ));
+        assert!(!is_identical_rustup_update(
+            "some unrelated line without update info"
+        ));
+    }
+
+    #[test]
+    fn record_rustup_status_filters_identical_updates() {
+        use crate::state::AppState;
+        let mut state = AppState::default();
+        let mut logs = Vec::new();
+
+        let output = "stable-x86_64-pc-windows-msvc - update available: 1.96.0 -> 1.96.0\n\
+                      nightly-x86_64-pc-windows-msvc - update available: 1.95.0 -> 1.96.0\n";
+
+        record_rustup_status(&mut state, &mut logs, 100, output);
+
+        assert!(state.rustup.has_updates);
+        assert_eq!(state.rustup.updatable_items.len(), 1);
+        assert_eq!(
+            state.rustup.updatable_items[0],
+            "nightly-x86_64-pc-windows-msvc - update available: 1.95.0 -> 1.96.0"
+        );
+
+        // When all updates are identical:
+        let mut state_all_identical = AppState::default();
+        let mut logs_all_identical = Vec::new();
+        let output_all_identical =
+            "stable-x86_64-pc-windows-msvc - update available: 1.96.0 -> 1.96.0\n";
+
+        record_rustup_status(
+            &mut state_all_identical,
+            &mut logs_all_identical,
+            100,
+            output_all_identical,
+        );
+
+        assert!(!state_all_identical.rustup.has_updates);
+        assert!(state_all_identical.rustup.updatable_items.is_empty());
+    }
 
     #[test]
     fn detects_windows_gnu_toolchain() {
