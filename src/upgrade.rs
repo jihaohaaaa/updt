@@ -126,6 +126,7 @@ struct StandardUpgradeTarget {
 
 type StandardUpgradeFuture<'a> = Pin<Box<dyn Future<Output = StandardUpgradeOutcome> + 'a>>;
 type StandardUpgradeFn = for<'a> fn(&'a AppState, &'a str) -> StandardUpgradeFuture<'a>;
+const RUSTUP_UPDATE_ARGS: &[&str] = &["update", "--no-self-update"];
 
 const PRE_PACMAN_STANDARD_TARGETS: &[StandardUpgradeTarget] = &[
     StandardUpgradeTarget {
@@ -439,8 +440,8 @@ async fn upgrade_rustup() -> bool {
     run_logged_inherit(
         "rustup",
         "rustup",
-        &["update"],
-        "rustup update",
+        RUSTUP_UPDATE_ARGS,
+        "rustup update --no-self-update",
         "[rustup] toolchain 升级完成.",
         "[rustup] toolchain 升级失败.",
     )
@@ -1487,8 +1488,8 @@ exit"
 #[cfg(test)]
 mod tests {
     use super::{
-        ScoopInstallScope, ScoopUpdateTask, TerminalFocusState, UpgradeFailures,
-        build_scoop_update_tasks, paru_password_attention_reason,
+        RUSTUP_UPDATE_ARGS, ScoopInstallScope, ScoopUpdateTask, TerminalFocusState,
+        UpgradeFailures, build_scoop_update_tasks, paru_password_attention_reason,
     };
     use crate::parse::ScoopListItem;
 
@@ -1524,6 +1525,11 @@ mod tests {
             paru_password_attention_reason(TerminalFocusState::Unknown)
                 .is_some_and(|reason| reason.contains("无法确认"))
         );
+    }
+
+    #[test]
+    fn rustup_upgrade_disables_self_update() {
+        assert_eq!(RUSTUP_UPDATE_ARGS, ["update", "--no-self-update"]);
     }
 
     #[test]
