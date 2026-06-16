@@ -86,13 +86,15 @@ fn cargo_list_line_ignored(line: &str) -> bool {
 
 fn parse_cargo_package_row(parts: &[&str]) -> Result<Option<String>, ()> {
     if !cargo_package_row_shape(parts) {
-        return Err(());
+        return Ok(None);
     }
     cargo_package_update(parts[0], parts[3])
 }
 
 fn cargo_package_row_shape(parts: &[&str]) -> bool {
-    parts.len() == 4 && parts[1].starts_with('v') && parts[2].starts_with('v')
+    parts.len() == 4
+        && parts[1].starts_with('v')
+        && (parts[2].starts_with('v') || parts[2] == "N/A")
 }
 
 fn cargo_package_update(name: &str, needs_update: &str) -> Result<Option<String>, ()> {
@@ -570,5 +572,41 @@ Downloading new version\n\
         let output = "ERROR hash check failed\nInstallation aborted.\n";
 
         assert_eq!(parse_scoop_blocked_process_output(output), None);
+    }
+
+    #[test]
+    fn parses_cargo_list_output() {
+        let output = "\
+    Updating registry `https://github.com/rust-lang/crates.io-index`
+    Updating git repository `https://github.com/nabijaczleweli/cargo-update`
+warning: some warning message about crate locks
+Package         Installed  Latest    Needs update
+cargo-binstall  v1.19.1    v1.20.0   Yes
+cargo-deny      v0.19.8    v0.19.9   Yes
+cbindgen        v0.29.3    v0.29.4   Yes
+charasay        v3.3.0     v3.3.1    Yes
+updt            v0.2.0     v0.2.1    Yes
+bindgen-cli     v0.72.1    v0.72.1   No
+bluz            v0.3.1     v0.3.1    No
+cargo-about     v0.9.0     v0.9.0    No
+cargo-edit      v0.13.11   v0.13.11  No
+cargo-expand    v1.0.122   v1.0.122  No
+cargo-nextest   v0.9.137   v0.9.137  No
+cargo-outdated  v0.19.0    v0.19.0   No
+cargo-update    v20.0.2    v20.0.2   No
+kaleidoscope    v0.2.0     N/A       No
+mmisay          v0.1.0     v0.1.0    No
+names           v0.14.0    v0.14.0   No
+rusty-rain      v0.5.0     v0.5.0    No
+tlrc            v1.13.1    v1.13.1   No
+";
+        let expected = vec![
+            "cargo-binstall".to_string(),
+            "cargo-deny".to_string(),
+            "cbindgen".to_string(),
+            "charasay".to_string(),
+            "updt".to_string(),
+        ];
+        assert_eq!(super::parse_cargo_list(output), Ok(expected));
     }
 }
