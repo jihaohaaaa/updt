@@ -1,6 +1,6 @@
 use crate::command::{
-    command_exists, run_capture, run_cargo_install_update_inherit, run_inherit,
-    run_nvim_headless_inherit,
+    command_exists, run_capture, run_capture_streaming, run_cargo_install_update_inherit,
+    run_inherit, run_nvim_headless_inherit,
 };
 use crate::output::{err_text, ok_text, print_section};
 #[cfg(windows)]
@@ -839,8 +839,6 @@ async fn run_scoop_update_task(task: &ScoopUpdateTask, allow_prompt: bool) -> Sc
             return ScoopTaskOutcome::FailedOther;
         };
 
-        print_captured_command_output(&output);
-
         if let Some(blocked) = parse_scoop_blocked_process_output(&output) {
             match handle_scoop_blocked_update(task, &blocked, allow_prompt).await {
                 ScoopBlockedUpdate::Retry => continue,
@@ -907,16 +905,6 @@ fn scoop_status_outcome(task: &ScoopUpdateTask, status: i32) -> ScoopTaskOutcome
     }
 }
 
-fn print_captured_command_output(output: &str) {
-    if output.is_empty() {
-        return;
-    }
-    print!("{output}");
-    if !output.ends_with('\n') {
-        println!();
-    }
-}
-
 fn scoop_command_label(args: &[String]) -> String {
     #[cfg(windows)]
     let program = "gsudo scoop";
@@ -927,6 +915,16 @@ fn scoop_command_label(args: &[String]) -> String {
         program.to_string()
     } else {
         format!("{program} {}", args.join(" "))
+    }
+}
+
+fn print_captured_command_output(output: &str) {
+    if output.is_empty() {
+        return;
+    }
+    print!("{output}");
+    if !output.ends_with('\n') {
+        println!();
     }
 }
 
@@ -965,12 +963,12 @@ async fn run_scoop_capture(args: &[String]) -> io::Result<(i32, String)> {
         let mut elevated_args = Vec::with_capacity(args.len() + 1);
         elevated_args.push("scoop".to_string());
         elevated_args.extend_from_slice(args);
-        run_capture("gsudo", &borrow_string_args(&elevated_args)).await
+        run_capture_streaming("gsudo", &borrow_string_args(&elevated_args)).await
     }
 
     #[cfg(not(windows))]
     {
-        run_capture("scoop", &borrow_string_args(args)).await
+        run_capture_streaming("scoop", &borrow_string_args(args)).await
     }
 }
 

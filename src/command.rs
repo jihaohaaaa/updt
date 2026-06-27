@@ -1,11 +1,13 @@
 use std::env;
 use std::io;
+use std::io::Write as _;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use tokio::fs;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
 pub async fn command_exists(name: &str) -> bool {
@@ -116,6 +118,70 @@ pub async fn run_capture(program: &str, args: &[&str]) -> io::Result<(i32, Strin
     text.push_str(&String::from_utf8_lossy(&output.stdout));
     text.push_str(&String::from_utf8_lossy(&output.stderr));
     Ok((code, text))
+}
+
+pub async fn run_capture_streaming(program: &str, args: &[&str]) -> io::Result<(i32, String)> {
+    let mut child = command(program)
+        .await
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("stdout pipe unavailable"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("stderr pipe unavailable"))?;
+
+    let stdout_task = tokio::spawn(read_streaming_output(stdout));
+    let stderr_task = tokio::spawn(read_streaming_output(stderr));
+    let status = child.wait().await?;
+    let stdout_text = join_stream_reader(stdout_task).await?;
+    let stderr_text = join_stream_reader(stderr_task).await?;
+
+    let mut text = String::new();
+    text.push_str(&stdout_text);
+    text.push_str(&stderr_text);
+    Ok((status.code().unwrap_or(-1), text))
+}
+
+async fn read_streaming_output<R>(mut reader: R) -> io::Result<String>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    let mut bytes = Vec::new();
+    let mut buffer = [0; 8192];
+
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+
+        write_stream_chunk(&buffer[..read])?;
+        bytes.extend_from_slice(&buffer[..read]);
+    }
+
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn write_stream_chunk(bytes: &[u8]) -> io::Result<()> {
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(bytes)?;
+    stdout.flush()
+}
+
+async fn join_stream_reader(
+    handle: tokio::task::JoinHandle<io::Result<String>>,
+) -> io::Result<String> {
+    handle
+        .await
+        .map_err(|err| io::Error::other(format!("stream reader task failed: {err}")))?
 }
 
 pub async fn run_inherit(program: &str, args: &[&str]) -> io::Result<bool> {
