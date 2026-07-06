@@ -2,13 +2,11 @@ use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
 
-use crate::command::{
-    command_exists, run_capture, run_cargo_install_update_capture, run_nvim_headless_capture,
-};
+use crate::command::{command_exists, run_capture, run_cargo_install_update_capture};
 use crate::output::{MsgKind, log_pkg_line};
 use crate::parse::{
-    extract_marker_count, first_json_payload, first_token, parse_cargo_list,
-    parse_fnm_version_token, parse_scoop_status_output,
+    first_json_payload, first_token, parse_cargo_list, parse_fnm_version_token,
+    parse_scoop_status_output,
 };
 use crate::profile::parse_profile;
 use crate::state::{AppState, SystemProfile};
@@ -96,7 +94,7 @@ macro_rules! check_runner {
 check_runner!(run_brew_check, check_brew_quiet);
 check_runner!(run_npm_check, check_npm_quiet);
 check_runner!(run_cargo_check, check_cargo_quiet);
-check_runner!(run_nvim_check, check_nvim_quiet);
+
 check_runner!(run_rustup_check, check_rustup_quiet);
 check_runner!(run_fnm_check, check_fnm_quiet);
 check_runner!(run_scoop_check, check_scoop_quiet);
@@ -115,10 +113,6 @@ fn merge_npm_check(state: &mut AppState, local: AppState) {
 
 fn merge_cargo_check(state: &mut AppState, local: AppState) {
     state.cargo = local.cargo;
-}
-
-fn merge_nvim_check(state: &mut AppState, local: AppState) {
-    state.nvim = local.nvim;
 }
 
 fn merge_rustup_check(state: &mut AppState, local: AppState) {
@@ -164,11 +158,6 @@ static CHECK_TARGET_HANDLERS: &[CheckTargetHandler] = &[
         target: "cargo",
         check: run_cargo_check,
         merge: merge_cargo_check,
-    },
-    CheckTargetHandler {
-        target: "nvim",
-        check: run_nvim_check,
-        merge: merge_nvim_check,
     },
     CheckTargetHandler {
         target: "rustup",
@@ -1111,11 +1100,30 @@ fn pkg_name_from_token(token: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
+pub async fn run_single_check(target: &str) -> CheckResult {
+    let mut local = AppState::default();
+    let mut logs = Vec::new();
+    parse_profile(&mut local).await;
+    if let Some(handler) = check_target_handler(target) {
+        (handler.check)(&mut local, &mut logs).await;
+    }
+    CheckResult {
+        target: target.to_string(),
+        state: local,
+        logs,
+    }
+}
+
+pub fn merge_check_result(state: &mut AppState, target: &str, local: AppState) {
+    if let Some(handler) = check_target_handler(target) {
+        (handler.merge)(state, local);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        NVIM_COUNT_PROBES, add_nvim_component_if_needed, is_identical_rustup_update,
-        nvim_count_from_output, package_names_from_lines, pacman_status_means_no_updates,
+        is_identical_rustup_update, package_names_from_lines, pacman_status_means_no_updates,
         pkg_updatable_name, pkg_updatable_names, record_rustup_status,
         rustup_toolchains_include_windows_gnu,
     };
@@ -1212,308 +1220,5 @@ mod tests {
             vec!["libc".to_string(), "vim".to_string()]
         );
         assert_eq!(pkg_updatable_name("not-a-package"), None);
-    }
-
-    #[test]
-    fn nvim_count_from_output_extracts_marker_or_marks_failed() {
-        let probe = &NVIM_COUNT_PROBES[0];
-        let mut failed = false;
-        let mut logs = Vec::new();
-
-        assert_eq!(
-            nvim_count_from_output(&mut failed, &mut logs, probe, "noise\nUPDT_LAZY_COUNT=3\n"),
-            Some(3)
-        );
-        assert!(!failed);
-
-        assert_eq!(
-            nvim_count_from_output(&mut failed, &mut logs, probe, "noise"),
-            None
-        );
-        assert!(failed);
-    }
-
-    #[test]
-    fn adds_nvim_component_only_when_count_is_positive() {
-        let probe = &NVIM_COUNT_PROBES[1];
-        let mut components = Vec::new();
-
-        add_nvim_component_if_needed(&mut components, probe, 0);
-        add_nvim_component_if_needed(&mut components, probe, 2);
-
-        assert_eq!(components, vec!["Mason tools: 2 项可更新".to_string()]);
-    }
-}
-
-struct NvimAvailabilityProbe {
-    args: &'static [&'static str],
-    ok_marker: &'static str,
-    command_error: &'static str,
-    exit_label: &'static str,
-}
-
-#[derive(Clone, Copy)]
-enum NvimManager {
-    Lazy,
-    Mason,
-}
-
-struct NvimCountProbe {
-    manager: NvimManager,
-    args: &'static [&'static str],
-    marker: &'static str,
-    component_label: &'static str,
-    command_error: &'static str,
-    exit_label: &'static str,
-    parse_error: &'static str,
-}
-
-const NVIM_LAZY_AVAILABILITY: NvimAvailabilityProbe = NvimAvailabilityProbe {
-    args: &[
-        "+lua local ok=pcall(require,'lazy'); print(ok and 'UPDT_LAZY_OK' or 'UPDT_LAZY_MISSING')",
-        "+qa",
-    ],
-    ok_marker: "UPDT_LAZY_OK",
-    command_error: "检查失败: 无法启动 nvim.",
-    exit_label: "Lazy",
-};
-
-const NVIM_MASON_AVAILABILITY: NvimAvailabilityProbe = NvimAvailabilityProbe {
-    args: &[
-        "+lua local ok=pcall(require,'mason'); print(ok and 'UPDT_MASON_OK' or 'UPDT_MASON_MISSING')",
-        "+qa",
-    ],
-    ok_marker: "UPDT_MASON_OK",
-    command_error: "检查失败: Mason 探测命令失败.",
-    exit_label: "Mason",
-};
-
-static NVIM_COUNT_PROBES: &[NvimCountProbe] = &[
-    NvimCountProbe {
-        manager: NvimManager::Lazy,
-        args: &[
-            "+lua local checker=require('lazy.manage.checker'); checker.check({show=false}); vim.wait(120000, function() return not checker.running end, 200); local n=0; for _ in pairs(checker.updated or {}) do n=n+1 end; print('UPDT_LAZY_COUNT='..n)",
-            "+qa",
-        ],
-        marker: "UPDT_LAZY_COUNT=",
-        component_label: "Lazy plugins",
-        command_error: "检查失败: Lazy 更新计数命令失败.",
-        exit_label: "Lazy",
-        parse_error: "检查失败: Lazy 计数输出解析失败.",
-    },
-    NvimCountProbe {
-        manager: NvimManager::Mason,
-        args: &[
-            "+lua local reg=require('mason-registry'); local ok,pkgs=pcall(reg.get_installed_packages); if not ok then print('UPDT_MASON_COUNT=0') return end; local n=0; for _,p in ipairs(pkgs) do local ok_i,iv=pcall(p.get_installed_version,p); local ok_l,lv=pcall(p.get_latest_version,p); if ok_i and ok_l and tostring(iv)~=tostring(lv) then n=n+1 end end; print('UPDT_MASON_COUNT='..n)",
-            "+qa",
-        ],
-        marker: "UPDT_MASON_COUNT=",
-        component_label: "Mason tools",
-        command_error: "检查失败: Mason 更新计数命令失败.",
-        exit_label: "Mason",
-        parse_error: "检查失败: Mason 计数输出解析失败.",
-    },
-];
-
-async fn check_nvim_quiet(state: &mut AppState, logs: &mut Vec<String>) {
-    if !ensure_nvim_checkable(state, logs).await {
-        return;
-    }
-    logs.push(log_pkg_line(
-        "nvim",
-        "正在检查 Lazy/Mason 可用性...",
-        MsgKind::Info,
-    ));
-
-    if !probe_nvim_managers(state, logs).await {
-        return;
-    }
-    if !nvim_has_supported_manager(state, logs) {
-        return;
-    }
-    if !record_nvim_counts(state, logs).await {
-        return;
-    }
-
-    finish_nvim_check(state, logs);
-}
-
-async fn ensure_nvim_checkable(state: &mut AppState, logs: &mut Vec<String>) -> bool {
-    ensure_check_target(
-        state.enable.nvim,
-        &mut state.nvim.installed,
-        "nvim",
-        "nvim",
-        logs,
-    )
-    .await
-}
-
-async fn probe_nvim_managers(state: &mut AppState, logs: &mut Vec<String>) -> bool {
-    let Some(lazy_available) =
-        probe_nvim_availability(&mut state.nvim.check_failed, logs, &NVIM_LAZY_AVAILABILITY).await
-    else {
-        return false;
-    };
-    let Some(mason_available) =
-        probe_nvim_availability(&mut state.nvim.check_failed, logs, &NVIM_MASON_AVAILABILITY).await
-    else {
-        return false;
-    };
-    state.nvim.lazy_available = lazy_available;
-    state.nvim.mason_available = mason_available;
-    true
-}
-
-async fn probe_nvim_availability(
-    check_failed: &mut bool,
-    logs: &mut Vec<String>,
-    probe: &NvimAvailabilityProbe,
-) -> Option<bool> {
-    let Ok((status, output)) = run_nvim_headless_capture(probe.args).await else {
-        mark_check_failed(check_failed, "nvim", probe.command_error, logs);
-        return None;
-    };
-    if status != 0 {
-        mark_check_failed(
-            check_failed,
-            "nvim",
-            &format!("检查失败: {} 探测退出码 {status}.", probe.exit_label),
-            logs,
-        );
-        return None;
-    }
-    Some(output.contains(probe.ok_marker))
-}
-
-fn nvim_has_supported_manager(state: &AppState, logs: &mut Vec<String>) -> bool {
-    if state.nvim.lazy_available || state.nvim.mason_available {
-        return true;
-    }
-    logs.push(log_pkg_line(
-        "nvim",
-        "未检测到 Lazy 或 Mason, 跳过.",
-        MsgKind::Warn,
-    ));
-    false
-}
-
-async fn record_nvim_counts(state: &mut AppState, logs: &mut Vec<String>) -> bool {
-    for probe in NVIM_COUNT_PROBES {
-        if !nvim_count_probe_enabled(state, probe) {
-            continue;
-        }
-        if !record_nvim_count(
-            &mut state.nvim.check_failed,
-            &mut state.nvim.updatable_components,
-            logs,
-            probe,
-        )
-        .await
-        {
-            return false;
-        }
-    }
-    true
-}
-
-fn nvim_count_probe_enabled(state: &AppState, probe: &NvimCountProbe) -> bool {
-    match probe.manager {
-        NvimManager::Lazy => state.nvim.lazy_available,
-        NvimManager::Mason => state.nvim.mason_available,
-    }
-}
-
-async fn record_nvim_count(
-    check_failed: &mut bool,
-    components: &mut Vec<String>,
-    logs: &mut Vec<String>,
-    probe: &NvimCountProbe,
-) -> bool {
-    let Some(count) = load_nvim_count(check_failed, logs, probe).await else {
-        return false;
-    };
-    add_nvim_component_if_needed(components, probe, count);
-    true
-}
-
-async fn load_nvim_count(
-    check_failed: &mut bool,
-    logs: &mut Vec<String>,
-    probe: &NvimCountProbe,
-) -> Option<usize> {
-    let Ok((status, output)) = run_nvim_headless_capture(probe.args).await else {
-        mark_check_failed(check_failed, "nvim", probe.command_error, logs);
-        return None;
-    };
-    if status != 0 {
-        mark_check_failed(
-            check_failed,
-            "nvim",
-            &format!("检查失败: {} 计数退出码 {status}.", probe.exit_label),
-            logs,
-        );
-        return None;
-    }
-    nvim_count_from_output(check_failed, logs, probe, &output)
-}
-
-fn nvim_count_from_output(
-    check_failed: &mut bool,
-    logs: &mut Vec<String>,
-    probe: &NvimCountProbe,
-    output: &str,
-) -> Option<usize> {
-    let count = extract_marker_count(output, probe.marker);
-    if count.is_none() {
-        mark_check_failed(check_failed, "nvim", probe.parse_error, logs);
-    }
-    count
-}
-
-fn add_nvim_component_if_needed(
-    components: &mut Vec<String>,
-    probe: &NvimCountProbe,
-    count: usize,
-) {
-    if count > 0 {
-        components.push(format!("{}: {count} 项可更新", probe.component_label));
-    }
-}
-
-fn finish_nvim_check(state: &mut AppState, logs: &mut Vec<String>) {
-    if state.nvim.updatable_components.is_empty() {
-        logs.push(log_pkg_line(
-            "nvim",
-            "Neovim 插件与 Mason 已是最新.",
-            MsgKind::Ok,
-        ));
-        return;
-    }
-
-    state.nvim.has_updates = true;
-    logs.push(log_pkg_line("nvim", "检测到可更新项:", MsgKind::Info));
-    for item in &state.nvim.updatable_components {
-        logs.push(format!("  - {item}"));
-    }
-}
-
-pub async fn run_single_check(target: &str) -> CheckResult {
-    let mut local = AppState::default();
-    let mut logs = Vec::new();
-    parse_profile(&mut local).await;
-    if let Some(handler) = check_target_handler(target) {
-        (handler.check)(&mut local, &mut logs).await;
-    }
-    CheckResult {
-        target: target.to_string(),
-        state: local,
-        logs,
-    }
-}
-
-pub fn merge_check_result(state: &mut AppState, target: &str, local: AppState) {
-    if let Some(handler) = check_target_handler(target) {
-        (handler.merge)(state, local);
     }
 }

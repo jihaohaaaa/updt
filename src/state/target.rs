@@ -1,7 +1,7 @@
 use super::{AppState, TargetStateFlags};
 
-pub const TARGET_IDS: [&str; 11] = [
-    "brew", "npm", "cargo", "nvim", "rustup", "fnm", "scoop", "paru", "flatpak", "pacman", "pkg",
+pub const TARGET_IDS: [&str; 10] = [
+    "brew", "npm", "cargo", "rustup", "fnm", "scoop", "paru", "flatpak", "pacman", "pkg",
 ];
 
 struct TargetMeta {
@@ -13,7 +13,7 @@ struct TargetMeta {
     items: fn(&AppState) -> Vec<String>,
 }
 
-const TARGET_META: [TargetMeta; 11] = [
+const TARGET_META: [TargetMeta; 10] = [
     TargetMeta {
         id: "brew",
         label: "Homebrew",
@@ -37,14 +37,6 @@ const TARGET_META: [TargetMeta; 11] = [
         update_summary: "发现可升级项",
         flags: cargo_flags,
         items: cargo_items,
-    },
-    TargetMeta {
-        id: "nvim",
-        label: "Neovim",
-        section: "Neovim (Lazy/Mason)",
-        update_summary: "可执行更新",
-        flags: nvim_flags,
-        items: nvim_items,
     },
     TargetMeta {
         id: "rustup",
@@ -181,15 +173,6 @@ fn cargo_flags(state: &AppState) -> TargetStateFlags {
     }
 }
 
-fn nvim_flags(state: &AppState) -> TargetStateFlags {
-    bucket_flags(
-        state.enable.nvim,
-        state.nvim.installed,
-        state.nvim.check_failed,
-        state.nvim.has_updates,
-    )
-}
-
 fn rustup_flags(state: &AppState) -> TargetStateFlags {
     bucket_flags(
         state.enable.rustup,
@@ -271,10 +254,6 @@ fn cargo_items(state: &AppState) -> Vec<String> {
     state.cargo.updatable_packages.clone()
 }
 
-fn nvim_items(state: &AppState) -> Vec<String> {
-    state.nvim.updatable_components.clone()
-}
-
 fn rustup_items(state: &AppState) -> Vec<String> {
     state.rustup.updatable_items.clone()
 }
@@ -315,7 +294,6 @@ mod tests {
     fn returns_target_metadata_and_unknown_defaults() {
         assert_eq!(target_label("brew"), "Homebrew");
         assert_eq!(section_title("pkg"), "pkg (Termux)");
-        assert_eq!(target_update_summary("nvim"), "可执行更新");
         assert_eq!(target_label("missing"), "unknown");
         assert_eq!(target_update_summary("missing"), "发现可升级项");
     }

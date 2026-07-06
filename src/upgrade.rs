@@ -1,6 +1,6 @@
 use crate::command::{
     command_exists, run_capture, run_capture_streaming, run_cargo_install_update_inherit,
-    run_inherit, run_nvim_headless_inherit,
+    run_inherit,
 };
 use crate::output::{err_text, ok_text, print_section};
 #[cfg(windows)]
@@ -142,10 +142,6 @@ const PRE_PACMAN_STANDARD_TARGETS: &[StandardUpgradeTarget] = &[
         run: run_cargo_target,
     },
     StandardUpgradeTarget {
-        id: "nvim",
-        run: run_nvim_target,
-    },
-    StandardUpgradeTarget {
         id: "rustup",
         run: run_rustup_target,
     },
@@ -241,10 +237,6 @@ fn run_cargo_target<'a>(state: &'a AppState, self_pkg: &'a str) -> StandardUpgra
     Box::pin(async move {
         StandardUpgradeOutcome::from_cargo(upgrade_cargo_packages(state, self_pkg).await)
     })
-}
-
-fn run_nvim_target<'a>(state: &'a AppState, _self_pkg: &'a str) -> StandardUpgradeFuture<'a> {
-    Box::pin(async move { StandardUpgradeOutcome::from_success(upgrade_nvim(state).await) })
 }
 
 fn run_rustup_target<'a>(_state: &'a AppState, _self_pkg: &'a str) -> StandardUpgradeFuture<'a> {
@@ -383,59 +375,6 @@ async fn upgrade_cargo_package_targets(targets: &[String]) -> bool {
     }
 }
 
-async fn upgrade_nvim(state: &AppState) -> bool {
-    if !state.nvim.installed {
-        println!("[nvim] 未安装 nvim, 跳过.");
-        return true;
-    }
-
-    let lazy_ok = upgrade_nvim_lazy(state.nvim.lazy_available).await;
-    let mason_ok = upgrade_nvim_mason(state.nvim.mason_available).await;
-    lazy_ok && mason_ok
-}
-
-async fn upgrade_nvim_lazy(lazy_available: bool) -> bool {
-    if !lazy_available {
-        println!("[nvim] 未检测到 Lazy 插件管理器, 跳过插件更新.");
-        return true;
-    }
-
-    run_logged_nvim_headless(
-        "nvim --headless \"+Lazy! sync\" +qa",
-        &["+Lazy! sync", "+qa"],
-        "[nvim] Lazy 插件更新完成.",
-        "[nvim] Lazy 插件更新失败.",
-    )
-    .await
-}
-
-async fn upgrade_nvim_mason(mason_available: bool) -> bool {
-    if !mason_available {
-        println!("[nvim] 未检测到 mason.nvim, 跳过 Mason 更新.");
-        return true;
-    }
-
-    let registry_ok = run_logged_nvim_headless(
-        "nvim --headless \"+Lazy load mason.nvim\" \"+MasonUpdate\" +qa",
-        &["+Lazy load mason.nvim", "+MasonUpdate", "+qa"],
-        "[nvim] Mason registry 更新完成.",
-        "[nvim] Mason registry 更新失败.",
-    )
-    .await;
-    let packages_ok = run_logged_nvim_headless(
-        "nvim --headless \"+Lazy load mason.nvim\" \"+lua ... MasonInstall <installed>\" +qa",
-        &[
-            "+Lazy load mason.nvim",
-            "+lua local root=vim.fn.stdpath('data')..'/mason/packages'; local ok,dir=pcall(vim.fs.dir,root); if not ok or not dir then return end; local pkgs={}; for name,t in dir do if t=='directory' then table.insert(pkgs,name) end end; table.sort(pkgs); if #pkgs>0 then vim.cmd('MasonInstall '..table.concat(pkgs,' ')) end",
-            "+qa",
-        ],
-        "[nvim] Mason 已安装工具更新完成.",
-        "[nvim] Mason 已安装工具更新失败.",
-    )
-    .await;
-    registry_ok && packages_ok
-}
-
 async fn upgrade_rustup() -> bool {
     run_logged_inherit(
         "rustup",
@@ -561,25 +500,6 @@ async fn run_logged_inherit(
 ) -> bool {
     println!("[{prefix}] 正在执行: {command_label}");
     match run_inherit(program, args).await {
-        Ok(true) => {
-            println!("{success_message}");
-            true
-        }
-        _ => {
-            println!("{failure_message}");
-            false
-        }
-    }
-}
-
-async fn run_logged_nvim_headless(
-    command_label: &str,
-    args: &[&str],
-    success_message: &str,
-    failure_message: &str,
-) -> bool {
-    println!("[nvim] 正在执行: {command_label}");
-    match run_nvim_headless_inherit(args).await {
         Ok(true) => {
             println!("{success_message}");
             true
@@ -1089,7 +1009,7 @@ fn scoop_app_dir_script(task: &ScoopUpdateTask, scoop_core_dir: &str) -> String 
         "$ErrorActionPreference='Stop'; \
 . '{scoop_core_literal}\\lib\\core.ps1'; \
 . '{scoop_core_literal}\\lib\\versions.ps1'; \
-$path = currentdir '{app_literal}' ${global}; \
+$path = appdir '{app_literal}' ${global}; \
 if (Test-Path $path) {{ Convert-Path $path }} else {{ exit 2 }}"
     )
 }

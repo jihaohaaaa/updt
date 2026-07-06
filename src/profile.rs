@@ -6,7 +6,6 @@ use crate::state::{AppState, SystemProfile};
 
 pub async fn parse_profile(state: &mut AppState) {
     let prefix = env::var("PREFIX").unwrap_or_default();
-    state.enable.nvim = true;
     state.is_termux = prefix.contains("com.termux")
         || fs::metadata("/data/data/com.termux/files/usr/bin/pkg")
             .await

@@ -51,16 +51,6 @@ pub struct CargoState {
 }
 
 #[derive(Default, Clone)]
-pub struct NvimState {
-    pub installed: bool,
-    pub has_updates: bool,
-    pub check_failed: bool,
-    pub lazy_available: bool,
-    pub mason_available: bool,
-    pub updatable_components: Vec<String>,
-}
-
-#[derive(Default, Clone)]
 pub struct EnablePolicy {
     pub brew: bool,
     pub npm: bool,
@@ -72,7 +62,6 @@ pub struct EnablePolicy {
     pub pacman: bool,
     pub flatpak: bool,
     pub pkg: bool,
-    pub nvim: bool,
 }
 
 #[derive(Default, Clone)]
@@ -87,7 +76,6 @@ pub struct AppState {
     pub flatpak: TargetBucketState,
     pub pacman: TargetBucketState,
     pub pkg: TargetBucketState,
-    pub nvim: NvimState,
     pub is_arch_linux: bool,
     pub is_termux: bool,
     pub system_profile: SystemProfile,

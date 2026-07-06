@@ -207,15 +207,3 @@ pub async fn run_cargo_install_update_inherit(args: &[&str]) -> io::Result<bool>
     proxy_args.extend_from_slice(args);
     run_inherit("cargo-install-update", &proxy_args).await
 }
-
-pub async fn run_nvim_headless_capture(args: &[&str]) -> io::Result<(i32, String)> {
-    let mut all_args = vec!["--headless"];
-    all_args.extend_from_slice(args);
-    run_capture("nvim", &all_args).await
-}
-
-pub async fn run_nvim_headless_inherit(args: &[&str]) -> io::Result<bool> {
-    let mut all_args = vec!["--headless"];
-    all_args.extend_from_slice(args);
-    run_inherit("nvim", &all_args).await
-}

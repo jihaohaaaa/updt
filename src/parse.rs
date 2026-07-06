@@ -366,18 +366,6 @@ pub fn parse_fnm_version_token(line: &str) -> Option<String> {
     None
 }
 
-pub fn extract_marker_count(output: &str, marker: &str) -> Option<usize> {
-    for line in output.lines() {
-        let trimmed = line.trim();
-        if let Some(raw) = trimmed.strip_prefix(marker)
-            && let Ok(value) = raw.trim().parse::<usize>()
-        {
-            return Some(value);
-        }
-    }
-    None
-}
-
 pub fn strip_ansi_control_sequences(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();

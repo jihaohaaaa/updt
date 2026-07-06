@@ -7,7 +7,7 @@
 
 `updt` is a Rust command-line tool that checks and runs updates across your development package managers from one interactive workflow.
 
-Instead of remembering separate update commands for Homebrew, npm, cargo, rustup, fnm, Scoop, paru, pacman, Flatpak, Termux `pkg`, and Neovim plugins, run `updt`, review what has updates, choose the targets you want, and let the original package managers do the work.
+Instead of remembering separate update commands for Homebrew, npm, cargo, rustup, fnm, Scoop, paru, pacman, Flatpak, and Termux `pkg`, run `updt`, review what has updates, choose the targets you want, and let the original package managers do the work.
 
 ```bash
 cargo install updt
@@ -77,7 +77,6 @@ updt fish
 | `brew` | Homebrew formulae and casks | macOS profile |
 | `npm` | npm global packages | Requires `npm` |
 | `cargo` | cargo-installed crates | Requires `cargo-install-update` |
-| `nvim` | Neovim Lazy and Mason components | Requires `nvim` |
 | `rustup` | Rust toolchains | Requires `rustup` |
 | `fnm` | fnm-managed Node.js versions | Checks latest and LTS versions |
 | `scoop` | Scoop packages | Windows profile |
@@ -94,11 +93,11 @@ Windows system package managers `winget` and `choco` are intentionally unsupport
 
 | Profile | Enabled targets |
 | --- | --- |
-| macOS | `brew`, `npm`, `cargo`, `nvim`, `rustup`, `fnm` |
-| Windows | `npm`, `cargo`, `nvim`, `rustup`, `fnm`, `scoop` |
-| Arch Linux | `npm`, `cargo`, `nvim`, `rustup`, `fnm`, `paru`, `pacman`, `flatpak` |
-| Termux | `pkg`, `npm`, `cargo`, `nvim`, `fnm` |
-| Other systems | `nvim` only |
+| macOS | `brew`, `npm`, `cargo`, `rustup`, `fnm` |
+| Windows | `npm`, `cargo`, `rustup`, `fnm`, `scoop` |
+| Arch Linux | `npm`, `cargo`, `rustup`, `fnm`, `paru`, `pacman`, `flatpak` |
+| Termux | `pkg`, `npm`, `cargo`, `fnm` |
+| Other systems | None |
 
 Unsupported or missing commands are skipped during checks.
 
@@ -114,7 +113,6 @@ Target-specific notes:
 
 - `cargo` checks require `cargo-install-update` in `PATH`.
 - `cargo-binstall` is recommended for faster binary installation of cargo-managed tools.
-- Neovim checks require `nvim` and look for Lazy and Mason update availability.
 - Termux `pkg` checks use `apt list --upgradable`.
 - `pacman` upgrades may use `sudo` or `pkexec`, depending on terminal focus and desktop session state.
 

@@ -842,13 +842,13 @@ mod tests {
         assert_eq!(unknown_summary, "未知状态");
 
         let mut updated = AppState::default();
-        updated.enable.nvim = true;
-        updated.nvim.installed = true;
-        updated.nvim.has_updates = true;
-        let (kind, summary) = summarize_target_status("nvim", &updated);
+        updated.enable.rustup = true;
+        updated.rustup.installed = true;
+        updated.rustup.has_updates = true;
+        let (kind, summary) = summarize_target_status("rustup", &updated);
 
         assert!(matches!(kind, MsgKind::Warn));
-        assert_eq!(summary, "可执行更新");
+        assert_eq!(summary, "发现可升级项");
     }
 
     #[test]
