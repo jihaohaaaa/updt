@@ -411,7 +411,8 @@ pub async fn cargo_update_missing(state: &AppState) -> bool {
 }
 
 pub async fn cargo_binstall_missing(state: &AppState) -> bool {
-    state.enable.cargo
+    !state.is_termux
+        && state.enable.cargo
         && state.cargo.installed
         && command_exists("cargo").await
         && !command_exists("cargo-binstall").await
