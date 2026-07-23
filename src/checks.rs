@@ -715,6 +715,9 @@ async fn check_scoop_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     {
         return;
     }
+    if !refresh_scoop_metadata(&mut state.scoop.check_failed, logs).await {
+        return;
+    }
     logs.push(log_pkg_line(
         "scoop",
         "正在检查可升级项 (scoop status)...",
@@ -724,8 +727,36 @@ async fn check_scoop_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     let Some(parsed) = load_scoop_status(&mut state.scoop.check_failed, logs).await else {
         return;
     };
-    let parsed = refresh_scoop_status_if_needed(parsed, logs).await;
     record_scoop_status(state, logs, parsed);
+}
+
+async fn refresh_scoop_metadata(check_failed: &mut bool, logs: &mut Vec<String>) -> bool {
+    logs.push(log_pkg_line(
+        "scoop",
+        "正在刷新 Scoop/桶元数据 (scoop update --quiet)...",
+        MsgKind::Info,
+    ));
+    match run_capture("scoop", &["update", "--quiet"]).await {
+        Ok((0, _)) => true,
+        Ok((status, _)) => {
+            mark_check_failed(
+                check_failed,
+                "scoop",
+                &format!("元数据刷新失败 (scoop update --quiet, exit {status})."),
+                logs,
+            );
+            false
+        }
+        Err(_) => {
+            mark_check_failed(
+                check_failed,
+                "scoop",
+                "元数据刷新失败: 无法执行 scoop update --quiet.",
+                logs,
+            );
+            false
+        }
+    }
 }
 
 async fn load_scoop_status(
@@ -755,59 +786,6 @@ async fn load_scoop_status(
     Some(parse_scoop_status_output(&output))
 }
 
-async fn refresh_scoop_status_if_needed(
-    mut parsed: crate::parse::ScoopStatusOutput,
-    logs: &mut Vec<String>,
-) -> crate::parse::ScoopStatusOutput {
-    if parsed.updatable_items.is_empty() && parsed.metadata_outdated {
-        logs.push(log_pkg_line(
-            "scoop",
-            "Scoop/桶元数据过期, 正在刷新后重新检查 (scoop update --quiet)...",
-            MsgKind::Warn,
-        ));
-        refresh_scoop_status_after_metadata_update(&mut parsed, logs).await;
-    }
-    parsed
-}
-
-async fn refresh_scoop_status_after_metadata_update(
-    parsed: &mut crate::parse::ScoopStatusOutput,
-    logs: &mut Vec<String>,
-) {
-    match run_capture("scoop", &["update", "--quiet"]).await {
-        Ok((0, _)) => refresh_scoop_status_local(parsed, logs).await,
-        Ok((refresh_status, _)) => logs.push(log_pkg_line(
-            "scoop",
-            &format!("元数据刷新失败 (scoop update --quiet, exit {refresh_status})."),
-            MsgKind::Warn,
-        )),
-        Err(_) => logs.push(log_pkg_line(
-            "scoop",
-            "元数据刷新失败: 无法执行 scoop update --quiet.",
-            MsgKind::Warn,
-        )),
-    }
-}
-
-async fn refresh_scoop_status_local(
-    parsed: &mut crate::parse::ScoopStatusOutput,
-    logs: &mut Vec<String>,
-) {
-    match run_capture("scoop", &["status", "--local"]).await {
-        Ok((0, refreshed_output)) => *parsed = parse_scoop_status_output(&refreshed_output),
-        Ok((refresh_status, _)) => logs.push(log_pkg_line(
-            "scoop",
-            &format!("重新检查失败 (scoop status --local, exit {refresh_status})."),
-            MsgKind::Warn,
-        )),
-        Err(_) => logs.push(log_pkg_line(
-            "scoop",
-            "重新检查失败: 无法执行 scoop status --local.",
-            MsgKind::Warn,
-        )),
-    }
-}
-
 fn record_scoop_status(
     state: &mut AppState,
     logs: &mut Vec<String>,
@@ -818,10 +796,9 @@ fn record_scoop_status(
 
     if state.scoop.updatable_items.is_empty() {
         if metadata_outdated {
-            state.scoop.has_updates = true;
             logs.push(log_pkg_line(
                 "scoop",
-                "Scoop/桶元数据有更新, 可执行 upgrade 阶段刷新.",
+                "检查期间 Scoop/桶元数据再次发生变化，请重新运行检查.",
                 MsgKind::Warn,
             ));
         } else {

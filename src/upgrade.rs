@@ -628,10 +628,6 @@ fn build_scoop_update_tasks(
 }
 
 async fn upgrade_scoop_packages(state: &AppState) -> bool {
-    if !refresh_scoop_metadata().await {
-        return false;
-    }
-
     let Some(tasks) = scoop_update_tasks_for_state(state).await else {
         return false;
     };
@@ -639,25 +635,6 @@ async fn upgrade_scoop_packages(state: &AppState) -> bool {
     let outcome = run_scoop_update_batch(tasks, interactive_terminal()).await;
     outcome.print_summary();
     outcome.success()
-}
-
-async fn refresh_scoop_metadata() -> bool {
-    let metadata_args = vec!["update".to_string()];
-    println!("[scoop] 正在执行: {}", scoop_command_label(&metadata_args));
-    match run_scoop_inherit(&metadata_args).await {
-        Ok(true) => true,
-        Ok(false) => {
-            println!(
-                "[scoop] 升级失败: {} 失败.",
-                scoop_command_label(&metadata_args)
-            );
-            false
-        }
-        Err(err) => {
-            println!("[scoop] 升级失败: {err}");
-            false
-        }
-    }
 }
 
 async fn scoop_update_tasks_for_state(state: &AppState) -> Option<Vec<ScoopUpdateTask>> {
@@ -845,28 +822,6 @@ fn print_captured_command_output(output: &str) {
     print!("{output}");
     if !output.ends_with('\n') {
         println!();
-    }
-}
-
-async fn run_scoop_inherit(args: &[String]) -> io::Result<bool> {
-    #[cfg(windows)]
-    {
-        if !command_exists("gsudo").await {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "Windows Scoop 更新需要 gsudo, 但未找到 gsudo",
-            ));
-        }
-
-        let mut elevated_args = Vec::with_capacity(args.len() + 1);
-        elevated_args.push("scoop".to_string());
-        elevated_args.extend_from_slice(args);
-        run_inherit("gsudo", &borrow_string_args(&elevated_args)).await
-    }
-
-    #[cfg(not(windows))]
-    {
-        run_inherit("scoop", &borrow_string_args(args)).await
     }
 }
 
