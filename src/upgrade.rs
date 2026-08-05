@@ -20,6 +20,8 @@ use std::io::Write as _;
 #[cfg(windows)]
 use std::process::{Command, Stdio};
 
+const NPM_UPDATE_ARGS: &[&str] = &["update", "-g", "--prefer-online"];
+
 pub async fn upgrade_selected(state: &AppState, selected: &[String]) -> bool {
     print_section("执行升级");
     let mut failures = UpgradeFailures::default();
@@ -300,8 +302,8 @@ async fn upgrade_npm() -> bool {
     run_logged_inherit(
         "npm",
         "npm",
-        &["update", "-g"],
-        "npm update -g",
+        NPM_UPDATE_ARGS,
+        "npm update -g --prefer-online",
         "[npm] 全局包升级完成.",
         "[npm] 全局包升级失败.",
     )
@@ -815,6 +817,7 @@ fn scoop_command_label(args: &[String]) -> String {
     }
 }
 
+#[cfg(windows)]
 fn print_captured_command_output(output: &str) {
     if output.is_empty() {
         return;

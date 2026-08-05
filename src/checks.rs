@@ -11,6 +11,8 @@ use crate::parse::{
 use crate::profile::parse_profile;
 use crate::state::{AppState, SystemProfile};
 
+const NPM_OUTDATED_ARGS: &[&str] = &["outdated", "--json", "--global", "--prefer-online"];
+
 pub struct CheckResult {
     pub target: String,
     pub state: AppState,
@@ -298,7 +300,7 @@ async fn check_npm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
     }
     logs.push(log_pkg_line(
         "npm",
-        "正在检查全局包更新 (npm outdated --json --global)...",
+        "正在刷新 npm 元数据并检查全局包更新 (npm outdated --json --global --prefer-online)...",
         MsgKind::Info,
     ));
     let Some(items) = load_npm_outdated_items(&mut state.npm.check_failed, logs).await else {
@@ -319,7 +321,7 @@ async fn load_npm_outdated_items(
     check_failed: &mut bool,
     logs: &mut Vec<String>,
 ) -> Option<Vec<String>> {
-    let Ok((status, output)) = run_capture("npm", &["outdated", "--json", "--global"]).await else {
+    let Ok((status, output)) = run_capture("npm", NPM_OUTDATED_ARGS).await else {
         mark_check_failed(check_failed, "npm", "检查失败: 无法执行 npm 命令.", logs);
         return None;
     };
