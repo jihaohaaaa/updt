@@ -78,7 +78,6 @@ fn apply_termux_policy(state: &mut AppState) {
     state.enable.pkg = true;
     state.enable.npm = true;
     state.enable.cargo = true;
-    state.enable.fnm = true;
     state.enable.rustup = false;
 }
 
@@ -86,7 +85,6 @@ fn apply_windows_policy(state: &mut AppState) {
     state.enable.npm = true;
     state.enable.cargo = true;
     state.enable.rustup = true;
-    state.enable.fnm = true;
     state.enable.scoop = true;
 }
 
@@ -95,14 +93,12 @@ fn apply_macos_policy(state: &mut AppState) {
     state.enable.npm = true;
     state.enable.cargo = true;
     state.enable.rustup = true;
-    state.enable.fnm = true;
 }
 
 fn apply_arch_policy(state: &mut AppState) {
     state.enable.npm = true;
     state.enable.cargo = true;
     state.enable.rustup = true;
-    state.enable.fnm = true;
     state.enable.paru = true;
     state.enable.pacman = true;
     state.enable.flatpak = true;

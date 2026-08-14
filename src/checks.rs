@@ -4,10 +4,7 @@ use std::pin::Pin;
 
 use crate::command::{command_exists, run_capture, run_cargo_install_update_capture};
 use crate::output::{MsgKind, log_pkg_line};
-use crate::parse::{
-    first_json_payload, first_token, parse_cargo_list, parse_fnm_version_token,
-    parse_scoop_status_output,
-};
+use crate::parse::{first_json_payload, first_token, parse_cargo_list, parse_scoop_status_output};
 use crate::profile::parse_profile;
 use crate::state::{AppState, SystemProfile};
 
@@ -98,7 +95,6 @@ check_runner!(run_npm_check, check_npm_quiet);
 check_runner!(run_cargo_check, check_cargo_quiet);
 
 check_runner!(run_rustup_check, check_rustup_quiet);
-check_runner!(run_fnm_check, check_fnm_quiet);
 check_runner!(run_scoop_check, check_scoop_quiet);
 check_runner!(run_paru_check, check_paru_quiet);
 check_runner!(run_flatpak_check, check_flatpak_quiet);
@@ -119,10 +115,6 @@ fn merge_cargo_check(state: &mut AppState, local: AppState) {
 
 fn merge_rustup_check(state: &mut AppState, local: AppState) {
     state.rustup = local.rustup;
-}
-
-fn merge_fnm_check(state: &mut AppState, local: AppState) {
-    state.fnm = local.fnm;
 }
 
 fn merge_scoop_check(state: &mut AppState, local: AppState) {
@@ -165,11 +157,6 @@ static CHECK_TARGET_HANDLERS: &[CheckTargetHandler] = &[
         target: "rustup",
         check: run_rustup_check,
         merge: merge_rustup_check,
-    },
-    CheckTargetHandler {
-        target: "fnm",
-        check: run_fnm_check,
-        merge: merge_fnm_check,
     },
     CheckTargetHandler {
         target: "scoop",
@@ -546,163 +533,6 @@ fn rustup_toolchains_include_windows_gnu(output: &str) -> bool {
         .lines()
         .map(str::trim)
         .any(|line| line.contains("windows-gnu"))
-}
-
-async fn check_fnm_quiet(state: &mut AppState, logs: &mut Vec<String>) {
-    if !ensure_check_target(
-        state.enable.fnm,
-        &mut state.fnm.installed,
-        "fnm",
-        "fnm",
-        logs,
-    )
-    .await
-    {
-        return;
-    }
-    logs.push(log_pkg_line(
-        "fnm",
-        "正在检查 Node.js 版本更新 (fnm list/list-remote)...",
-        MsgKind::Info,
-    ));
-
-    let Some(installed_versions) =
-        load_fnm_installed_versions(&mut state.fnm.check_failed, logs).await
-    else {
-        return;
-    };
-    let Some(latest_version) = load_fnm_remote_version(
-        &mut state.fnm.check_failed,
-        logs,
-        &["list-remote", "--latest"],
-        "latest",
-    )
-    .await
-    else {
-        return;
-    };
-    let Some(lts_version) = load_fnm_remote_version(
-        &mut state.fnm.check_failed,
-        logs,
-        &["list-remote", "--lts", "--latest"],
-        "LTS",
-    )
-    .await
-    else {
-        return;
-    };
-
-    record_fnm_updates(
-        state,
-        logs,
-        &installed_versions,
-        &latest_version,
-        &lts_version,
-    );
-}
-
-async fn load_fnm_installed_versions(
-    check_failed: &mut bool,
-    logs: &mut Vec<String>,
-) -> Option<Vec<String>> {
-    let Ok((list_status, list_output)) = run_capture("fnm", &["list"]).await else {
-        mark_check_failed(check_failed, "fnm", "检查失败: 无法执行 fnm list.", logs);
-        return None;
-    };
-    if list_status != 0 {
-        mark_check_failed(
-            check_failed,
-            "fnm",
-            &format!("检查失败 (fnm list, exit {list_status})."),
-            logs,
-        );
-        return None;
-    }
-
-    Some(
-        list_output
-            .lines()
-            .filter_map(parse_fnm_version_token)
-            .collect(),
-    )
-}
-
-async fn load_fnm_remote_version(
-    check_failed: &mut bool,
-    logs: &mut Vec<String>,
-    args: &[&str],
-    label: &str,
-) -> Option<String> {
-    let Ok((status, output)) = run_capture("fnm", args).await else {
-        mark_check_failed(
-            check_failed,
-            "fnm",
-            &format!("检查失败: 无法获取 {label} 远端版本."),
-            logs,
-        );
-        return None;
-    };
-    if status != 0 {
-        mark_check_failed(
-            check_failed,
-            "fnm",
-            &format!("检查失败 (fnm {}, exit {status}).", args.join(" ")),
-            logs,
-        );
-        return None;
-    }
-    parse_fnm_remote_version(check_failed, logs, &output, label)
-}
-
-fn parse_fnm_remote_version(
-    check_failed: &mut bool,
-    logs: &mut Vec<String>,
-    output: &str,
-    label: &str,
-) -> Option<String> {
-    let version = output.lines().find_map(parse_fnm_version_token);
-    if version.is_none() {
-        mark_check_failed(
-            check_failed,
-            "fnm",
-            &format!("检查失败: {label} 版本解析失败."),
-            logs,
-        );
-    }
-    version
-}
-
-fn record_fnm_updates(
-    state: &mut AppState,
-    logs: &mut Vec<String>,
-    installed_versions: &[String],
-    latest_version: &str,
-    lts_version: &str,
-) {
-    if !installed_versions.iter().any(|v| v == latest_version) {
-        state
-            .fnm
-            .updatable_items
-            .push(format!("latest -> {latest_version}"));
-    }
-    if !installed_versions.iter().any(|v| v == lts_version) {
-        state
-            .fnm
-            .updatable_items
-            .push(format!("lts -> {lts_version}"));
-    }
-
-    if state.fnm.updatable_items.is_empty() {
-        logs.push(log_pkg_line("fnm", "latest/LTS 已安装到最新.", MsgKind::Ok));
-    } else {
-        state.fnm.has_updates = true;
-        log_item_list(
-            logs,
-            "fnm",
-            "以下 Node.js 版本可安装/更新:",
-            &state.fnm.updatable_items,
-        );
-    }
 }
 
 async fn check_scoop_quiet(state: &mut AppState, logs: &mut Vec<String>) {

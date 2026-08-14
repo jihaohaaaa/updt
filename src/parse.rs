@@ -357,15 +357,6 @@ pub fn parse_scoop_blocked_process_output(output: &str) -> Option<ScoopBlockedPr
     Some(ScoopBlockedProcessInfo { app_name, details })
 }
 
-pub fn parse_fnm_version_token(line: &str) -> Option<String> {
-    let trimmed = line.trim().trim_start_matches('*').trim();
-    let token = trimmed.split_whitespace().next()?;
-    if token.starts_with('v') {
-        return Some(token.to_string());
-    }
-    None
-}
-
 pub fn strip_ansi_control_sequences(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();

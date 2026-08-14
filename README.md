@@ -7,7 +7,7 @@
 
 `updt` is a Rust command-line tool that checks and runs updates across your development package managers from one interactive workflow.
 
-Instead of remembering separate update commands for Homebrew, npm, cargo, rustup, fnm, Scoop, paru, pacman, Flatpak, and Termux `pkg`, run `updt`, review what has updates, choose the targets you want, and let the original package managers do the work.
+Instead of remembering separate update commands for Homebrew, npm, cargo, rustup, Scoop, paru, pacman, Flatpak, and Termux `pkg`, run `updt`, review what has updates, choose the targets you want, and let the original package managers do the work.
 
 ```bash
 cargo install updt
@@ -78,7 +78,6 @@ updt fish
 | `npm` | npm global packages | Requires `npm` |
 | `cargo` | cargo-installed crates | Requires `cargo-install-update` |
 | `rustup` | Rust toolchains | Requires `rustup` |
-| `fnm` | fnm-managed Node.js versions | Checks latest and LTS versions |
 | `scoop` | Scoop packages | Windows profile |
 | `paru` | AUR packages | Arch Linux profile |
 | `flatpak` | Flatpak apps | Arch Linux profile |
@@ -93,10 +92,10 @@ Windows system package managers `winget` and `choco` are intentionally unsupport
 
 | Profile | Enabled targets |
 | --- | --- |
-| macOS | `brew`, `npm`, `cargo`, `rustup`, `fnm` |
-| Windows | `npm`, `cargo`, `rustup`, `fnm`, `scoop` |
-| Arch Linux | `npm`, `cargo`, `rustup`, `fnm`, `paru`, `pacman`, `flatpak` |
-| Termux | `pkg`, `npm`, `cargo`, `fnm` |
+| macOS | `brew`, `npm`, `cargo`, `rustup` |
+| Windows | `npm`, `cargo`, `rustup`, `scoop` |
+| Arch Linux | `npm`, `cargo`, `rustup`, `paru`, `pacman`, `flatpak` |
+| Termux | `pkg`, `npm`, `cargo` |
 | Other systems | None |
 
 Unsupported or missing commands are skipped during checks.

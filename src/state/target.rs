@@ -1,7 +1,7 @@
 use super::{AppState, TargetStateFlags};
 
-pub const TARGET_IDS: [&str; 10] = [
-    "brew", "npm", "cargo", "rustup", "fnm", "scoop", "paru", "flatpak", "pacman", "pkg",
+pub const TARGET_IDS: [&str; 9] = [
+    "brew", "npm", "cargo", "rustup", "scoop", "paru", "flatpak", "pacman", "pkg",
 ];
 
 struct TargetMeta {
@@ -13,7 +13,7 @@ struct TargetMeta {
     items: fn(&AppState) -> Vec<String>,
 }
 
-const TARGET_META: [TargetMeta; 10] = [
+const TARGET_META: [TargetMeta; 9] = [
     TargetMeta {
         id: "brew",
         label: "Homebrew",
@@ -45,14 +45,6 @@ const TARGET_META: [TargetMeta; 10] = [
         update_summary: "发现可升级项",
         flags: rustup_flags,
         items: rustup_items,
-    },
-    TargetMeta {
-        id: "fnm",
-        label: "fnm",
-        section: "fnm (Node.js runtime)",
-        update_summary: "发现可升级项",
-        flags: fnm_flags,
-        items: fnm_items,
     },
     TargetMeta {
         id: "scoop",
@@ -182,15 +174,6 @@ fn rustup_flags(state: &AppState) -> TargetStateFlags {
     )
 }
 
-fn fnm_flags(state: &AppState) -> TargetStateFlags {
-    bucket_flags(
-        state.enable.fnm,
-        state.fnm.installed,
-        state.fnm.check_failed,
-        state.fnm.has_updates,
-    )
-}
-
 fn scoop_flags(state: &AppState) -> TargetStateFlags {
     bucket_flags(
         state.enable.scoop,
@@ -256,10 +239,6 @@ fn cargo_items(state: &AppState) -> Vec<String> {
 
 fn rustup_items(state: &AppState) -> Vec<String> {
     state.rustup.updatable_items.clone()
-}
-
-fn fnm_items(state: &AppState) -> Vec<String> {
-    state.fnm.updatable_items.clone()
 }
 
 fn scoop_items(state: &AppState) -> Vec<String> {

@@ -148,10 +148,6 @@ const PRE_PACMAN_STANDARD_TARGETS: &[StandardUpgradeTarget] = &[
         run: run_rustup_target,
     },
     StandardUpgradeTarget {
-        id: "fnm",
-        run: run_fnm_target,
-    },
-    StandardUpgradeTarget {
         id: "scoop",
         run: run_scoop_target,
     },
@@ -243,10 +239,6 @@ fn run_cargo_target<'a>(state: &'a AppState, self_pkg: &'a str) -> StandardUpgra
 
 fn run_rustup_target<'a>(_state: &'a AppState, _self_pkg: &'a str) -> StandardUpgradeFuture<'a> {
     Box::pin(async { StandardUpgradeOutcome::from_success(upgrade_rustup().await) })
-}
-
-fn run_fnm_target<'a>(_state: &'a AppState, _self_pkg: &'a str) -> StandardUpgradeFuture<'a> {
-    Box::pin(async { StandardUpgradeOutcome::from_success(upgrade_fnm().await) })
 }
 
 fn run_scoop_target<'a>(state: &'a AppState, _self_pkg: &'a str) -> StandardUpgradeFuture<'a> {
@@ -387,28 +379,6 @@ async fn upgrade_rustup() -> bool {
         "[rustup] toolchain 升级失败.",
     )
     .await
-}
-
-async fn upgrade_fnm() -> bool {
-    let latest_ok = run_logged_inherit(
-        "fnm",
-        "fnm",
-        &["install", "--latest"],
-        "fnm install --latest",
-        "[fnm] latest Node.js 已安装/更新.",
-        "[fnm] latest Node.js 更新失败.",
-    )
-    .await;
-    let lts_ok = run_logged_inherit(
-        "fnm",
-        "fnm",
-        &["install", "--lts"],
-        "fnm install --lts",
-        "[fnm] LTS Node.js 已安装/更新.",
-        "[fnm] LTS Node.js 更新失败.",
-    )
-    .await;
-    latest_ok && lts_ok
 }
 
 async fn upgrade_paru() -> bool {
